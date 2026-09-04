@@ -23,48 +23,11 @@ import {
 import { WifiNetwork, WifiStatus } from "./services/types";
 
 function areWifiStatusesEqual(a: WifiStatus, b: WifiStatus): boolean {
-  return (
-    a.isOn === b.isOn &&
-    a.isConnected === b.isConnected &&
-    a.ssid === b.ssid &&
-    a.bssid === b.bssid &&
-    a.signalPercent === b.signalPercent &&
-    a.band === b.band &&
-    a.channel === b.channel &&
-    a.radioType === b.radioType &&
-    a.authentication === b.authentication &&
-    a.cipher === b.cipher &&
-    a.macAddress === b.macAddress &&
-    a.ipAddress === b.ipAddress &&
-    a.gateway === b.gateway &&
-    a.receiveRateMbps === b.receiveRateMbps &&
-    a.transmitRateMbps === b.transmitRateMbps &&
-    a.isTestingSpeed === b.isTestingSpeed &&
-    a.internetSpeed?.downloadMbps === b.internetSpeed?.downloadMbps &&
-    a.internetSpeed?.uploadMbps === b.internetSpeed?.uploadMbps &&
-    a.sessionData?.downloadedBytes === b.sessionData?.downloadedBytes &&
-    a.sessionData?.uploadedBytes === b.sessionData?.uploadedBytes
-  );
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function areWifiNetworksEqual(a: WifiNetwork[], b: WifiNetwork[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const n1 = a[i];
-    const n2 = b[i];
-    if (
-      n1.ssid !== n2.ssid ||
-      n1.signalPercent !== n2.signalPercent ||
-      n1.isConnected !== n2.isConnected ||
-      n1.isSaved !== n2.isSaved ||
-      n1.authentication !== n2.authentication ||
-      n1.encryption !== n2.encryption ||
-      n1.band !== n2.band
-    ) {
-      return false;
-    }
-  }
-  return true;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 export default function WifiCommand() {

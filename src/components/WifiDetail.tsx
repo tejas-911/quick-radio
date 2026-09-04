@@ -1,6 +1,5 @@
 import { Color, Icon, List } from "@raycast/api";
 import { WifiNetwork, WifiStatus } from "../services/types";
-import { generateWifiQrString, getWifiQrCodeImageUrl } from "../services/qr";
 
 interface WifiDetailProps {
   network: WifiNetwork;
@@ -194,4 +193,24 @@ function getSignalRating(percent: number): string {
   if (percent >= 40) return "Fair";
   if (percent > 0) return "Weak";
   return "Out of Range";
+}
+
+function generateWifiQrString(
+  ssid: string,
+  password?: string,
+  authentication = "WPA",
+): string {
+  const auth =
+    !password || authentication.toLowerCase().includes("open")
+      ? "nopass"
+      : "WPA";
+  const escapedSsid = ssid.replace(/([\\;,:"])/g, "\\$1");
+  const escapedPassword = password
+    ? password.replace(/([\\;,:"])/g, "\\$1")
+    : "";
+  return `WIFI:T:${auth};S:${escapedSsid};P:${escapedPassword};;`;
+}
+
+function getWifiQrCodeImageUrl(wifiQrString: string): string {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=2&data=${encodeURIComponent(wifiQrString)}`;
 }

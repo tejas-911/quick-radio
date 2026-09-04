@@ -1,5 +1,3 @@
-import https from "https";
-
 export interface InternetSpeedResult {
   downloadMbps: number;
   uploadMbps: number;
@@ -19,76 +17,51 @@ let isSpeedTestRunning = false;
 /**
  * Measures actual internet download speed by streaming bytes from Cloudflare CDN.
  */
-function measureDownloadSpeed(
+async function measureDownloadSpeed(
   bytes = 3.5 * 1024 * 1024,
 ): Promise<number | undefined> {
-  return new Promise((resolve) => {
-    const url = `https://speed.cloudflare.com/__down?bytes=${bytes}`;
+  try {
     const t0 = Date.now();
-    let received = 0;
-
-    const req = https.get(url, (res) => {
-      res.on("data", (chunk) => {
-        received += chunk.length;
-      });
-      res.on("end", () => {
-        const durationSec = (Date.now() - t0) / 1000;
-        if (durationSec > 0 && received > 0) {
-          const mbps = (received * 8) / (durationSec * 1_000_000);
-          resolve(Math.round(mbps * 10) / 10);
-        } else {
-          resolve(undefined);
-        }
-      });
-    });
-
-    req.on("error", () => resolve(undefined));
-    req.setTimeout(3500, () => {
-      req.destroy();
-      resolve(undefined);
-    });
-  });
+    const res = await fetch(
+      `https://speed.cloudflare.com/__down?bytes=${bytes}`,
+      { signal: AbortSignal.timeout(3500) },
+    );
+    if (!res.ok) return undefined;
+    const buffer = await res.arrayBuffer();
+    const durationSec = (Date.now() - t0) / 1000;
+    if (durationSec > 0 && buffer.byteLength > 0) {
+      const mbps = (buffer.byteLength * 8) / (durationSec * 1_000_000);
+      return Math.round(mbps * 10) / 10;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * Measures actual internet upload speed by sending a payload to Cloudflare CDN.
  */
-function measureUploadSpeed(bytes = 1024 * 1024): Promise<number | undefined> {
-  return new Promise((resolve) => {
-    const payload = Buffer.alloc(bytes, "x");
+async function measureUploadSpeed(
+  bytes = 1024 * 1024,
+): Promise<number | undefined> {
+  try {
     const t0 = Date.now();
-    const options = {
-      hostname: "speed.cloudflare.com",
-      port: 443,
-      path: "/__up",
+    const res = await fetch("https://speed.cloudflare.com/__up", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "Content-Length": payload.length,
-      },
-    };
-
-    const req = https.request(options, (res) => {
-      res.on("data", () => {});
-      res.on("end", () => {
-        const durationSec = (Date.now() - t0) / 1000;
-        if (durationSec > 0) {
-          const mbps = (bytes * 8) / (durationSec * 1_000_000);
-          resolve(Math.round(mbps * 10) / 10);
-        } else {
-          resolve(undefined);
-        }
-      });
+      body: new Uint8Array(bytes),
+      signal: AbortSignal.timeout(3500),
     });
-
-    req.on("error", () => resolve(undefined));
-    req.setTimeout(3500, () => {
-      req.destroy();
-      resolve(undefined);
-    });
-    req.write(payload);
-    req.end();
-  });
+    if (!res.ok) return undefined;
+    const durationSec = (Date.now() - t0) / 1000;
+    if (durationSec > 0) {
+      const mbps = (bytes * 8) / (durationSec * 1_000_000);
+      return Math.round(mbps * 10) / 10;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

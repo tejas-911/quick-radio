@@ -39,116 +39,6 @@ function Await($WinRtTask, $ResultType) {
 }
 `;
 
-const BLUETOOTH_INTEROP_CSHARP = `
-using System;
-using System.Runtime.InteropServices;
-using System.Threading;
-
-public class BluetoothInterop {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SYSTEMTIME {
-        public ushort wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct BLUETOOTH_DEVICE_INFO {
-        public uint dwSize;
-        public ulong Address;
-        public uint ulClassofDevice;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fConnected;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fRemembered;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fAuthenticated;
-        public SYSTEMTIME stLastSeen;
-        public SYSTEMTIME stLastUsed;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)]
-        public string szName;
-    }
-
-    [DllImport("BluetoothApis.dll", SetLastError = true)]
-    public static extern uint BluetoothEnumerateInstalledServices(
-        IntPtr hRadio,
-        ref BLUETOOTH_DEVICE_INFO pbtdi,
-        ref uint pcServices,
-        [In, Out] byte[] pGuidServices
-    );
-
-    [DllImport("BluetoothApis.dll", SetLastError = true)]
-    public static extern uint BluetoothSetServiceState(
-        IntPtr hRadio,
-        ref BLUETOOTH_DEVICE_INFO pbtdi,
-        ref Guid pGuidService,
-        uint dwServiceFlags
-    );
-
-    public static void Disconnect(ulong address) {
-        BLUETOOTH_DEVICE_INFO btdi = new BLUETOOTH_DEVICE_INFO();
-        btdi.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));
-        btdi.Address = address;
-
-        uint numServices = 0;
-        BluetoothEnumerateInstalledServices(IntPtr.Zero, ref btdi, ref numServices, null);
-        if (numServices > 0) {
-            byte[] guidBuffer = new byte[numServices * 16];
-            uint r = BluetoothEnumerateInstalledServices(IntPtr.Zero, ref btdi, ref numServices, guidBuffer);
-            if (r == 0) {
-                for (int i = 0; i < numServices; i++) {
-                    byte[] singleGuid = new byte[16];
-                    Array.Copy(guidBuffer, i * 16, singleGuid, 0, 16);
-                    Guid g = new Guid(singleGuid);
-                    BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 0u);
-                }
-            }
-        }
-
-        string[] standardProfiles = new string[] {
-            "0000110b-0000-1000-8000-00805f9b34fb",
-            "0000110a-0000-1000-8000-00805f9b34fb",
-            "0000111e-0000-1000-8000-00805f9b34fb",
-            "00001108-0000-1000-8000-00805f9b34fb",
-            "00001124-0000-1000-8000-00805f9b34fb",
-            "0000110c-0000-1000-8000-00805f9b34fb",
-            "0000110e-0000-1000-8000-00805f9b34fb"
-        };
-        foreach (string prof in standardProfiles) {
-            try {
-                Guid g = new Guid(prof);
-                BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 0u);
-            } catch {}
-        }
-    }
-
-    public static void Connect(ulong address) {
-        BLUETOOTH_DEVICE_INFO btdi = new BLUETOOTH_DEVICE_INFO();
-        btdi.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));
-        btdi.Address = address;
-
-        string[] standardProfiles = new string[] {
-            "0000110b-0000-1000-8000-00805f9b34fb",
-            "0000111e-0000-1000-8000-00805f9b34fb",
-            "00001124-0000-1000-8000-00805f9b34fb",
-            "0000110a-0000-1000-8000-00805f9b34fb",
-            "00001108-0000-1000-8000-00805f9b34fb",
-            "0000110c-0000-1000-8000-00805f9b34fb",
-            "0000110e-0000-1000-8000-00805f9b34fb"
-        };
-        foreach (string prof in standardProfiles) {
-            try {
-                Guid g = new Guid(prof);
-                uint res = BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 1u);
-                if (res == 87) {
-                    BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 0u);
-                    Thread.Sleep(150);
-                    BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 1u);
-                }
-            } catch {}
-        }
-    }
-}
-`;
-
 /**
  * Runs a PowerShell command with minimal overhead.
  */
@@ -241,11 +131,7 @@ async function getWlanInterfacesOutput(): Promise<string> {
   return pendingInterfacesPromise;
 }
 
-function getHelperExePath(preferredName?: string): string | undefined {
-  const names = preferredName
-    ? [preferredName, "quick-radios-helper.exe", "wlan-scan.exe"]
-    : ["quick-radios-helper.exe", "wlan-scan.exe"];
-
+function getHelperExePath(): string | undefined {
   const searchDirs = [
     environmentAssetsPath,
     path.join(__dirname, "assets"),
@@ -253,11 +139,9 @@ function getHelperExePath(preferredName?: string): string | undefined {
     path.resolve(process.cwd(), "assets"),
   ].filter(Boolean) as string[];
 
-  for (const name of names) {
-    for (const dir of searchDirs) {
-      const fullPath = path.join(dir, name);
-      if (fs.existsSync(fullPath)) return fullPath;
-    }
+  for (const dir of searchDirs) {
+    const fullPath = path.join(dir, "quick-radios-helper.exe");
+    if (fs.existsSync(fullPath)) return fullPath;
   }
   return undefined;
 }
@@ -271,7 +155,7 @@ async function toggleWindowsRadio(
 ): Promise<boolean> {
   invalidateWindowsWifiCache();
 
-  const helperExe = getHelperExePath("quick-radios-helper.exe");
+  const helperExe = getHelperExePath();
   const kindArg = kind === 1 ? "wifi" : "bt";
   const stateArg = targetState === undefined ? "" : targetState ? "on" : "off";
 
@@ -779,7 +663,7 @@ export async function getWindowsWifiPassword(
  * Gets the current Bluetooth radio power state using WinRT Radio API.
  */
 export async function getWindowsBluetoothStatus(): Promise<BluetoothStatus> {
-  const helperExe = getHelperExePath("quick-radios-helper.exe");
+  const helperExe = getHelperExePath();
   if (helperExe) {
     try {
       const { stdout } = await execFileAsync(helperExe, ["status", "bt"], {
@@ -823,7 +707,7 @@ export async function toggleWindowsBluetooth(
  * Retrieves all paired Bluetooth devices with connection status and categorized types.
  */
 export async function getWindowsBluetoothDevices(): Promise<BluetoothDevice[]> {
-  const helperExe = getHelperExePath("quick-radios-helper.exe");
+  const helperExe = getHelperExePath();
   if (helperExe) {
     try {
       const { stdout } = await execFileAsync(helperExe, ["devices"], {
@@ -961,103 +845,37 @@ export async function toggleWindowsBluetoothDeviceConnection(
     );
   }
 
-  const helperExe = getHelperExePath("quick-radios-helper.exe");
-  if (helperExe) {
-    try {
-      const { stdout } = await execFileAsync(
-        helperExe,
-        [connect ? "connect" : "disconnect", macHex],
-        { windowsHide: true },
+  const helperExe = getHelperExePath();
+  if (!helperExe) {
+    throw new Error("Quick Radios helper executable not found");
+  }
+
+  const { stdout } = await execFileAsync(
+    helperExe,
+    [connect ? "connect" : "disconnect", macHex],
+    { windowsHide: true },
+  );
+  const trimmed = stdout.trim();
+  if (connect) {
+    if (trimmed.includes("Connected")) {
+      return;
+    }
+    if (trimmed.includes("Timeout") || trimmed.includes("FailedToConnect")) {
+      throw new Error(
+        "Device did not respond or is not in range. Ensure it is turned on and ready to connect.",
       );
-      const trimmed = stdout.trim();
-      if (connect) {
-        if (trimmed.includes("Connected")) {
-          return;
-        }
-        if (
-          trimmed.includes("Timeout") ||
-          trimmed.includes("FailedToConnect")
-        ) {
-          throw new Error(
-            "Device did not respond or is not in range. Ensure it is turned on and ready to connect.",
-          );
-        }
-        if (trimmed.startsWith("Error:")) {
-          throw new Error(trimmed);
-        }
-      } else {
-        if (trimmed.includes("Disconnected")) {
-          return;
-        }
-        if (trimmed.startsWith("Error:")) {
-          throw new Error(trimmed);
-        }
-      }
-    } catch (err) {
-      if (
-        err instanceof Error &&
-        (err.message.includes("Device did not respond") ||
-          err.message.includes("Error:") ||
-          err.message.includes("not found"))
-      ) {
-        throw err;
-      }
-      // If execFile failed or helper crashed, fall back to PowerShell below
+    }
+    if (trimmed.startsWith("Error:")) {
+      throw new Error(trimmed);
+    }
+  } else {
+    if (trimmed.includes("Disconnected")) {
+      return;
+    }
+    if (trimmed.startsWith("Error:")) {
+      throw new Error(trimmed);
     }
   }
-
-  if (!connect) {
-    const script = `
-$csharp = @"
-${BLUETOOTH_INTEROP_CSHARP}
-"@
-try { Add-Type -TypeDefinition $csharp -Language CSharp } catch {}
-$macNum = [Convert]::ToUInt64('${macHex}', 16)
-[BluetoothInterop]::Disconnect($macNum)
-
-${WINRT_ASYNC_PREAMBLE}
-[Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
-for ($i = 0; $i -lt 15; $i++) {
-    $dev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($macNum)) ([Windows.Devices.Bluetooth.BluetoothDevice])
-    if ($dev -and $dev.ConnectionStatus -eq [Windows.Devices.Bluetooth.BluetoothConnectionStatus]::Disconnected) {
-        break
-    }
-    Start-Sleep -Milliseconds 250
-}
-`;
-    await runPowerShell(script);
-    return;
-  }
-
-  const script = `
-$csharp = @"
-${BLUETOOTH_INTEROP_CSHARP}
-"@
-try { Add-Type -TypeDefinition $csharp -Language CSharp } catch {}
-$macNum = [Convert]::ToUInt64('${macHex}', 16)
-[BluetoothInterop]::Connect($macNum)
-
-${WINRT_ASYNC_PREAMBLE}
-[Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
-$btDev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($macNum)) ([Windows.Devices.Bluetooth.BluetoothDevice])
-if ($btDev) {
-    $null = $btDev.GetRfcommServicesAsync()
-}
-
-$isConnected = $false
-for ($i = 0; $i -lt 20; $i++) {
-    Start-Sleep -Milliseconds 300
-    $dev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($macNum)) ([Windows.Devices.Bluetooth.BluetoothDevice])
-    if ($dev -and $dev.ConnectionStatus -eq [Windows.Devices.Bluetooth.BluetoothConnectionStatus]::Connected) {
-        $isConnected = $true
-        break
-    }
-}
-if (-not $isConnected) {
-    throw "Device did not respond or is not in range. Ensure it is turned on and ready to connect."
-}
-`;
-  await runPowerShell(script);
 }
 
 /**

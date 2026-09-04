@@ -22,23 +22,7 @@ function areBluetoothDevicesEqual(
   a: BluetoothDevice[],
   b: BluetoothDevice[],
 ): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const d1 = a[i];
-    const d2 = b[i];
-    if (
-      d1.id !== d2.id ||
-      d1.name !== d2.name ||
-      d1.isConnected !== d2.isConnected ||
-      d1.isPaired !== d2.isPaired ||
-      d1.category !== d2.category ||
-      d1.address !== d2.address ||
-      d1.batteryPercent !== d2.batteryPercent
-    ) {
-      return false;
-    }
-  }
-  return true;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 export default function BluetoothCommand() {
