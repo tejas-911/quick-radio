@@ -45,6 +45,10 @@ export default function BluetoothCommand() {
   const [status, setStatus] = useState<BluetoothStatus>({ isOn: true });
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingDeviceId, setPendingDeviceId] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<
+    "connecting" | "disconnecting" | null
+  >(null);
 
   const isMountedRef = useRef(true);
   const isScanningRef = useRef(false);
@@ -191,31 +195,41 @@ export default function BluetoothCommand() {
   }
 
   async function handleToggleDevice(device: BluetoothDevice) {
+    if (isActionInProgressRef.current) return;
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
-    const actionName = device.isConnected ? "Disconnecting" : "Connecting";
+    const targetConnected = !device.isConnected;
+    const actionName = targetConnected ? "Connecting" : "Disconnecting";
+    setPendingDeviceId(device.id);
+    setPendingAction(targetConnected ? "connecting" : "disconnecting");
+
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: `${actionName} "${device.name}"...`,
     });
-    setDevices((prev) =>
-      prev.map((d) =>
-        d.id === device.id ? { ...d, isConnected: !device.isConnected } : d,
-      ),
-    );
+
     try {
-      await toggleBluetoothDeviceConnection(device.id, !device.isConnected);
+      await toggleBluetoothDeviceConnection(device.id, targetConnected);
       if (!isMountedRef.current) return;
+      setDevices((prev) =>
+        prev.map((d) =>
+          d.id === device.id ? { ...d, isConnected: targetConnected } : d,
+        ),
+      );
       toast.style = Toast.Style.Success;
-      toast.title = `${device.isConnected ? "Disconnected" : "Connected"} "${device.name}"`;
-      scheduleTimeout(() => refresh(), 1500);
+      toast.title = `${targetConnected ? "Connected" : "Disconnected"} "${device.name}"`;
+      scheduleTimeout(() => refresh(), 1000);
     } catch (error) {
       if (!isMountedRef.current) return;
       toast.style = Toast.Style.Failure;
-      toast.title = `Failed to ${actionName.toLowerCase()}`;
+      toast.title = `Failed to ${targetConnected ? "connect" : "disconnect"} "${device.name}"`;
       toast.message = error instanceof Error ? error.message : String(error);
       refresh();
     } finally {
+      if (isMountedRef.current) {
+        setPendingDeviceId(null);
+        setPendingAction(null);
+      }
       isActionInProgressRef.current = false;
     }
   }
@@ -238,6 +252,7 @@ export default function BluetoothCommand() {
   );
 
   function renderDeviceItem(device: BluetoothDevice) {
+    const isPending = pendingDeviceId === device.id;
     let iconSource: Icon = Icon.Bluetooth;
     let iconColor: Color = Color.SecondaryText;
 
@@ -249,7 +264,9 @@ export default function BluetoothCommand() {
       iconSource = Icon.Keyboard;
     }
 
-    if (device.isConnected) {
+    if (isPending) {
+      iconColor = Color.Orange;
+    } else if (device.isConnected) {
       iconColor = Color.Green;
     }
 
@@ -259,23 +276,36 @@ export default function BluetoothCommand() {
         title={device.name}
         icon={{ source: iconSource, tintColor: iconColor }}
         accessories={
-          device.isConnected
+          isPending
             ? [
                 {
-                  icon: { source: Icon.CheckCircle, tintColor: Color.Green },
-                  text: { value: "Connected", color: Color.Green },
-                  tooltip: "Status: Connected",
-                },
-              ]
-            : [
-                {
                   tag: {
-                    value: "Paired",
-                    color: Color.SecondaryText,
+                    value:
+                      pendingAction === "connecting"
+                        ? "Connecting..."
+                        : "Disconnecting...",
+                    color: Color.Orange,
                   },
-                  tooltip: "Status: Paired",
+                  tooltip: `Operation in progress: ${pendingAction}`,
                 },
               ]
+            : device.isConnected
+              ? [
+                  {
+                    icon: { source: Icon.CheckCircle, tintColor: Color.Green },
+                    text: { value: "Connected", color: Color.Green },
+                    tooltip: "Status: Connected",
+                  },
+                ]
+              : [
+                  {
+                    tag: {
+                      value: "Paired",
+                      color: Color.SecondaryText,
+                    },
+                    tooltip: "Status: Paired",
+                  },
+                ]
         }
         detail={<BluetoothDetail device={device} />}
         actions={
@@ -283,10 +313,22 @@ export default function BluetoothCommand() {
             <ActionPanel.Section>
               <Action
                 title={
-                  device.isConnected ? "Disconnect Device" : "Connect Device"
+                  isPending
+                    ? pendingAction === "connecting"
+                      ? "Connecting..."
+                      : "Disconnecting..."
+                    : device.isConnected
+                      ? "Disconnect Device"
+                      : "Connect Device"
                 }
-                icon={device.isConnected ? Icon.XMarkCircle : Icon.Plug}
-                onAction={() => handleToggleDevice(device)}
+                icon={
+                  isPending
+                    ? Icon.Clock
+                    : device.isConnected
+                      ? Icon.XMarkCircle
+                      : Icon.Plug
+                }
+                onAction={() => !isPending && handleToggleDevice(device)}
               />
             </ActionPanel.Section>
             {device.address && (

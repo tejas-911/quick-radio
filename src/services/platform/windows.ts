@@ -42,6 +42,7 @@ function Await($WinRtTask, $ResultType) {
 const BLUETOOTH_INTEROP_CSHARP = `
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 public class BluetoothInterop {
     [StructLayout(LayoutKind.Sequential)]
@@ -107,7 +108,9 @@ public class BluetoothInterop {
             "0000110a-0000-1000-8000-00805f9b34fb",
             "0000111e-0000-1000-8000-00805f9b34fb",
             "00001108-0000-1000-8000-00805f9b34fb",
-            "00001124-0000-1000-8000-00805f9b34fb"
+            "00001124-0000-1000-8000-00805f9b34fb",
+            "0000110c-0000-1000-8000-00805f9b34fb",
+            "0000110e-0000-1000-8000-00805f9b34fb"
         };
         foreach (string prof in standardProfiles) {
             try {
@@ -124,17 +127,22 @@ public class BluetoothInterop {
 
         string[] standardProfiles = new string[] {
             "0000110b-0000-1000-8000-00805f9b34fb",
-            "0000110a-0000-1000-8000-00805f9b34fb",
-            "0000110c-0000-1000-8000-00805f9b34fb",
-            "0000110e-0000-1000-8000-00805f9b34fb",
             "0000111e-0000-1000-8000-00805f9b34fb",
+            "00001124-0000-1000-8000-00805f9b34fb",
+            "0000110a-0000-1000-8000-00805f9b34fb",
             "00001108-0000-1000-8000-00805f9b34fb",
-            "00001124-0000-1000-8000-00805f9b34fb"
+            "0000110c-0000-1000-8000-00805f9b34fb",
+            "0000110e-0000-1000-8000-00805f9b34fb"
         };
         foreach (string prof in standardProfiles) {
             try {
                 Guid g = new Guid(prof);
-                BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 1u);
+                uint res = BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 1u);
+                if (res == 87) {
+                    BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 0u);
+                    Thread.Sleep(150);
+                    BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref g, 1u);
+                }
             } catch {}
         }
     }
@@ -922,6 +930,51 @@ export async function toggleWindowsBluetoothDeviceConnection(
     );
   }
 
+  const helperExe = getHelperExePath("quick-radios-helper.exe");
+  if (helperExe) {
+    try {
+      const { stdout } = await execFileAsync(
+        helperExe,
+        [connect ? "connect" : "disconnect", macHex],
+        { windowsHide: true },
+      );
+      const trimmed = stdout.trim();
+      if (connect) {
+        if (trimmed.includes("Connected")) {
+          return;
+        }
+        if (
+          trimmed.includes("Timeout") ||
+          trimmed.includes("FailedToConnect")
+        ) {
+          throw new Error(
+            "Device did not respond or is not in range. Ensure it is turned on and ready to connect.",
+          );
+        }
+        if (trimmed.startsWith("Error:")) {
+          throw new Error(trimmed);
+        }
+      } else {
+        if (trimmed.includes("Disconnected")) {
+          return;
+        }
+        if (trimmed.startsWith("Error:")) {
+          throw new Error(trimmed);
+        }
+      }
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message.includes("Device did not respond") ||
+          err.message.includes("Error:") ||
+          err.message.includes("not found"))
+      ) {
+        throw err;
+      }
+      // If execFile failed or helper crashed, fall back to PowerShell below
+    }
+  }
+
   if (!connect) {
     const script = `
 $csharp = @"
@@ -930,6 +983,16 @@ ${BLUETOOTH_INTEROP_CSHARP}
 try { Add-Type -TypeDefinition $csharp -Language CSharp } catch {}
 $macNum = [Convert]::ToUInt64('${macHex}', 16)
 [BluetoothInterop]::Disconnect($macNum)
+
+${WINRT_ASYNC_PREAMBLE}
+[Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
+for ($i = 0; $i -lt 15; $i++) {
+    $dev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($macNum)) ([Windows.Devices.Bluetooth.BluetoothDevice])
+    if ($dev -and $dev.ConnectionStatus -eq [Windows.Devices.Bluetooth.BluetoothConnectionStatus]::Disconnected) {
+        break
+    }
+    Start-Sleep -Milliseconds 250
+}
 `;
     await runPowerShell(script);
     return;
@@ -948,6 +1011,19 @@ ${WINRT_ASYNC_PREAMBLE}
 $btDev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($macNum)) ([Windows.Devices.Bluetooth.BluetoothDevice])
 if ($btDev) {
     $null = $btDev.GetRfcommServicesAsync()
+}
+
+$isConnected = $false
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Milliseconds 300
+    $dev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($macNum)) ([Windows.Devices.Bluetooth.BluetoothDevice])
+    if ($dev -and $dev.ConnectionStatus -eq [Windows.Devices.Bluetooth.BluetoothConnectionStatus]::Connected) {
+        $isConnected = $true
+        break
+    }
+}
+if (-not $isConnected) {
+    throw "Device did not respond or is not in range. Ensure it is turned on and ready to connect."
 }
 `;
   await runPowerShell(script);
