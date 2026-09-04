@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 using Windows.Devices.Bluetooth;
+using Windows.Devices.Enumeration;
 using Windows.Devices.Radios;
 
 class QuickRadiosHelper {
@@ -69,6 +70,32 @@ class QuickRadiosHelper {
         ref Guid pGuidService,
         uint dwServiceFlags
     );
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BLUETOOTH_DEVICE_SEARCH_PARAMS {
+        public uint dwSize;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnAuthenticated;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnRemembered;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnUnknown;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnConnected;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fIssueInquiry;
+        public byte cTimeoutMultiplier;
+        public IntPtr hRadio;
+    }
+
+    [DllImport("BluetoothApis.dll", SetLastError = true)]
+    private static extern IntPtr BluetoothFindFirstDevice(ref BLUETOOTH_DEVICE_SEARCH_PARAMS searchParams, ref BLUETOOTH_DEVICE_INFO deviceInfo);
+
+    [DllImport("BluetoothApis.dll", SetLastError = true)]
+    private static extern bool BluetoothFindNextDevice(IntPtr hFind, ref BLUETOOTH_DEVICE_INFO deviceInfo);
+
+    [DllImport("BluetoothApis.dll", SetLastError = true)]
+    private static extern bool BluetoothFindDeviceClose(IntPtr hFind);
 
     private static int ScanWifi() {
         try {
@@ -420,6 +447,113 @@ class QuickRadiosHelper {
         }
     }
 
+    private static string EscapeJson(string s) {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "");
+    }
+
+    private static int ListDevices() {
+        try {
+            var searchParams = new BLUETOOTH_DEVICE_SEARCH_PARAMS();
+            searchParams.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS));
+            searchParams.fReturnAuthenticated = true;
+            searchParams.fReturnRemembered = true;
+            searchParams.fReturnConnected = true;
+            searchParams.fReturnUnknown = false;
+            searchParams.fIssueInquiry = false;
+            searchParams.hRadio = IntPtr.Zero;
+
+            var deviceInfo = new BLUETOOTH_DEVICE_INFO();
+            deviceInfo.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));
+
+            var results = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            IntPtr hFind = BluetoothFindFirstDevice(ref searchParams, ref deviceInfo);
+            if (hFind != IntPtr.Zero) {
+                try {
+                    do {
+                        string cleanHex = deviceInfo.Address.ToString("X12").ToUpperInvariant();
+                        if (string.IsNullOrEmpty(cleanHex) || cleanHex == "000000000000") continue;
+                        if (!seen.Add(cleanHex)) continue;
+
+                        string name = (deviceInfo.szName ?? "").Trim();
+                        if (string.IsNullOrEmpty(name)) name = "Bluetooth Device (" + cleanHex + ")";
+
+                        string formattedMac = string.Format("{0}:{1}:{2}:{3}:{4}:{5}",
+                            cleanHex.Substring(0, 2),
+                            cleanHex.Substring(2, 2),
+                            cleanHex.Substring(4, 2),
+                            cleanHex.Substring(6, 2),
+                            cleanHex.Substring(8, 2),
+                            cleanHex.Substring(10, 2));
+
+                        bool isConnected = deviceInfo.fConnected;
+                        try {
+                            var op = BluetoothDevice.FromBluetoothAddressAsync(deviceInfo.Address);
+                            var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
+                            if (task.Wait(400) && task.Result != null) {
+                                isConnected = (task.Result.ConnectionStatus == BluetoothConnectionStatus.Connected);
+                            }
+                        } catch {}
+
+                        string jsonItem = string.Format(
+                            "{{\"Id\":\"BTHENUM\\\\DEV_{0}\",\"Name\":\"{1}\",\"Address\":\"{2}\",\"IsConnected\":{3}}}",
+                            cleanHex,
+                            EscapeJson(name),
+                            formattedMac,
+                            isConnected ? "true" : "false"
+                        );
+                        results.Add(jsonItem);
+                    } while (BluetoothFindNextDevice(hFind, ref deviceInfo));
+                } finally {
+                    BluetoothFindDeviceClose(hFind);
+                }
+            }
+
+            try {
+                string leSelector = BluetoothLEDevice.GetDeviceSelectorFromPairingState(true);
+                var op = DeviceInformation.FindAllAsync(leSelector, new string[] { "System.Devices.Aep.IsConnected" });
+                var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
+                if (task.Wait(400) && task.Result != null) {
+                    foreach (var d in task.Result) {
+                        ulong addr;
+                        string cleanHex;
+                        if (TryParseMac(d.Id, out addr, out cleanHex)) {
+                            if (seen.Add(cleanHex)) {
+                                bool isConn = false;
+                                object connVal;
+                                if (d.Properties.TryGetValue("System.Devices.Aep.IsConnected", out connVal) && connVal is bool) {
+                                    isConn = (bool)connVal;
+                                }
+                                string formattedMac = string.Format("{0}:{1}:{2}:{3}:{4}:{5}",
+                                    cleanHex.Substring(0, 2),
+                                    cleanHex.Substring(2, 2),
+                                    cleanHex.Substring(4, 2),
+                                    cleanHex.Substring(6, 2),
+                                    cleanHex.Substring(8, 2),
+                                    cleanHex.Substring(10, 2));
+                                results.Add(string.Format(
+                                    "{{\"Id\":\"BTHENUM\\\\DEV_{0}\",\"Name\":\"{1}\",\"Address\":\"{2}\",\"IsConnected\":{3}}}",
+                                    cleanHex,
+                                    EscapeJson(d.Name),
+                                    formattedMac,
+                                    isConn ? "true" : "false"
+                                ));
+                            }
+                        }
+                    }
+                }
+            } catch {}
+
+            Console.WriteLine("[" + string.Join(",", results.ToArray()) + "]");
+            return 0;
+        } catch (Exception) {
+            Console.WriteLine("[]");
+            return 1;
+        }
+    }
+
     static int Main(string[] args) {
         if (args.Length == 0) {
             return ScanWifi();
@@ -428,6 +562,10 @@ class QuickRadiosHelper {
         string cmd = args[0].ToLowerInvariant();
         if (cmd == "scan" || cmd == "wlan-scan") {
             return ScanWifi();
+        }
+
+        if (cmd == "devices" || cmd == "list-devices" || cmd == "bt-devices") {
+            return ListDevices();
         }
 
         if (cmd == "connect" || cmd == "bt-connect" || cmd == "connect-device") {

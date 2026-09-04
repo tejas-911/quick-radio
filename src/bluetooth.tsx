@@ -183,7 +183,7 @@ export default function BluetoothCommand() {
       setStatus({ isOn: newState });
       toast.style = Toast.Style.Success;
       toast.title = `Bluetooth turned ${newState ? "ON" : "OFF"}`;
-      scheduleTimeout(() => refresh(), 1500);
+      scheduleTimeout(() => refresh({ isBackground: true }), 1500);
     } catch (error) {
       if (!isMountedRef.current) return;
       toast.style = Toast.Style.Failure;
@@ -200,10 +200,17 @@ export default function BluetoothCommand() {
     isActionInProgressRef.current = true;
     const targetConnected = !device.isConnected;
     const actionName = targetConnected ? "Connecting" : "Disconnecting";
+
+    // Instant 0ms optimistic UI update: move item and mark pending immediately
     setPendingDeviceId(device.id);
     setPendingAction(targetConnected ? "connecting" : "disconnecting");
+    setDevices((prev) =>
+      prev.map((d) =>
+        d.id === device.id ? { ...d, isConnected: targetConnected } : d,
+      ),
+    );
 
-    const toast = await showToast({
+    const toastPromise = showToast({
       style: Toast.Style.Animated,
       title: `${actionName} "${device.name}"...`,
     });
@@ -211,20 +218,23 @@ export default function BluetoothCommand() {
     try {
       await toggleBluetoothDeviceConnection(device.id, targetConnected);
       if (!isMountedRef.current) return;
-      setDevices((prev) =>
-        prev.map((d) =>
-          d.id === device.id ? { ...d, isConnected: targetConnected } : d,
-        ),
-      );
+      const toast = await toastPromise;
       toast.style = Toast.Style.Success;
       toast.title = `${targetConnected ? "Connected" : "Disconnected"} "${device.name}"`;
-      scheduleTimeout(() => refresh(), 1000);
+      scheduleTimeout(() => refresh({ isBackground: true }), 1500);
     } catch (error) {
       if (!isMountedRef.current) return;
+      // Revert optimistic update upon failure
+      setDevices((prev) =>
+        prev.map((d) =>
+          d.id === device.id ? { ...d, isConnected: !targetConnected } : d,
+        ),
+      );
+      const toast = await toastPromise;
       toast.style = Toast.Style.Failure;
       toast.title = `Failed to ${targetConnected ? "connect" : "disconnect"} "${device.name}"`;
       toast.message = error instanceof Error ? error.message : String(error);
-      refresh();
+      refresh({ isBackground: true });
     } finally {
       if (isMountedRef.current) {
         setPendingDeviceId(null);
@@ -273,6 +283,7 @@ export default function BluetoothCommand() {
     return (
       <List.Item
         key={device.id}
+        id={device.id}
         title={device.name}
         icon={{ source: iconSource, tintColor: iconColor }}
         accessories={
@@ -307,7 +318,13 @@ export default function BluetoothCommand() {
                   },
                 ]
         }
-        detail={<BluetoothDetail device={device} />}
+        detail={
+          <BluetoothDetail
+            device={device}
+            isPending={isPending}
+            pendingAction={pendingAction}
+          />
+        }
         actions={
           <ActionPanel>
             <ActionPanel.Section>

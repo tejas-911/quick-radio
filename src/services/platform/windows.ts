@@ -823,6 +823,37 @@ export async function toggleWindowsBluetooth(
  * Retrieves all paired Bluetooth devices with connection status and categorized types.
  */
 export async function getWindowsBluetoothDevices(): Promise<BluetoothDevice[]> {
+  const helperExe = getHelperExePath("quick-radios-helper.exe");
+  if (helperExe) {
+    try {
+      const { stdout } = await execFileAsync(helperExe, ["devices"], {
+        windowsHide: true,
+      });
+      const trimmed = stdout.trim();
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        const list = JSON.parse(trimmed);
+        if (Array.isArray(list)) {
+          return list.map(
+            (item: {
+              Id: string;
+              Name: string;
+              Address: string;
+              IsConnected: boolean;
+            }) => ({
+              id: item.Id,
+              name: item.Name,
+              address: item.Address,
+              category: categorizeBluetoothDevice(item.Name),
+              isConnected: Boolean(item.IsConnected),
+            }),
+          );
+        }
+      }
+    } catch {
+      // Fall back to PowerShell if helper fails
+    }
+  }
+
   const script = `
 ${WINRT_ASYNC_PREAMBLE}
 [Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
