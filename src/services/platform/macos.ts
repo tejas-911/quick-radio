@@ -1,4 +1,4 @@
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import {
   WifiStatus,
@@ -8,19 +8,22 @@ import {
   BluetoothDeviceCategory,
 } from "../types";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-async function runBash(command: string): Promise<string> {
-  const { stdout } = await execAsync(command);
+async function runExecFile(file: string, args: string[] = []): Promise<string> {
+  const { stdout } = await execFileAsync(file, args);
   return stdout.trim();
 }
+
+const AIRPORT_PATH =
+  "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport";
 
 /**
  * Gets the primary Wi-Fi hardware port name (e.g. en0).
  */
 async function getMacWifiDevice(): Promise<string> {
   try {
-    const output = await runBash("networksetup -listallhardwareports");
+    const output = await runExecFile("networksetup", ["-listallhardwareports"]);
     const match = output.match(/Hardware Port:\s*Wi-Fi\s+Device:\s*(\w+)/i);
     return match ? match[1] : "en0";
   } catch {
@@ -31,20 +34,19 @@ async function getMacWifiDevice(): Promise<string> {
 export async function getMacWifiStatus(): Promise<WifiStatus> {
   try {
     const device = await getMacWifiDevice();
-    const powerOutput = await runBash(
-      `networksetup -getairportpower ${device}`,
-    );
+    const powerOutput = await runExecFile("networksetup", [
+      "-getairportpower",
+      device,
+    ]);
     const isOn = /on/i.test(powerOutput);
 
     if (!isOn) {
       return { isOn: false, isConnected: false };
     }
 
-    const airportPath =
-      "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport";
     let infoOutput = "";
     try {
-      infoOutput = await runBash(`${airportPath} -I`);
+      infoOutput = await runExecFile(AIRPORT_PATH, ["-I"]);
     } catch {
       // If airport utility is not accessible
     }
@@ -63,7 +65,7 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
 
     let ipAddress: string | undefined;
     try {
-      ipAddress = await runBash(`ipconfig getifaddr ${device}`);
+      ipAddress = await runExecFile("ipconfig", ["getifaddr", device]);
     } catch {
       // IP query fallback
     }
@@ -88,17 +90,17 @@ export async function toggleMacWifi(targetState?: boolean): Promise<boolean> {
   const device = await getMacWifiDevice();
   const current = await getMacWifiStatus();
   const nextState = targetState !== undefined ? targetState : !current.isOn;
-  await runBash(
-    `networksetup -setairportpower ${device} ${nextState ? "on" : "off"}`,
-  );
+  await runExecFile("networksetup", [
+    "-setairportpower",
+    device,
+    nextState ? "on" : "off",
+  ]);
   return nextState;
 }
 
 export async function getMacWifiNetworks(): Promise<WifiNetwork[]> {
   try {
-    const airportPath =
-      "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport";
-    const scanOutput = await runBash(`${airportPath} -s`);
+    const scanOutput = await runExecFile(AIRPORT_PATH, ["-s"]);
     const current = await getMacWifiStatus();
 
     const networks: WifiNetwork[] = [];
@@ -134,26 +136,26 @@ export async function connectMacWifi(
   password?: string,
 ): Promise<void> {
   const device = await getMacWifiDevice();
+  const args = ["-setairportnetwork", device, ssid];
   if (password) {
-    await runBash(
-      `networksetup -setairportnetwork ${device} "${ssid}" "${password}"`,
-    );
-  } else {
-    await runBash(`networksetup -setairportnetwork ${device} "${ssid}"`);
+    args.push(password);
   }
+  await runExecFile("networksetup", args);
 }
 
 export async function disconnectMacWifi(): Promise<void> {
   const device = await getMacWifiDevice();
-  // On macOS, disconnecting can be achieved by toggling power off and back on or disassociating
-  await runBash(
-    `sudo airport ${device} -z || networksetup -setairportpower ${device} off && networksetup -setairportpower ${device} on`,
-  );
+  try {
+    await runExecFile(AIRPORT_PATH, [device, "-z"]);
+  } catch {
+    await runExecFile("networksetup", ["-setairportpower", device, "off"]);
+    await runExecFile("networksetup", ["-setairportpower", device, "on"]);
+  }
 }
 
 export async function getMacBluetoothStatus(): Promise<BluetoothStatus> {
   try {
-    const output = await runBash("blueutil --power");
+    const output = await runExecFile("blueutil", ["--power"]);
     return { isOn: output.trim() === "1" };
   } catch {
     return { isOn: true };
@@ -165,13 +167,17 @@ export async function toggleMacBluetooth(
 ): Promise<boolean> {
   const current = await getMacBluetoothStatus();
   const next = targetState !== undefined ? targetState : !current.isOn;
-  await runBash(`blueutil --power ${next ? "1" : "0"}`);
+  await runExecFile("blueutil", ["--power", next ? "1" : "0"]);
   return next;
 }
 
 export async function getMacBluetoothDevices(): Promise<BluetoothDevice[]> {
   try {
-    const output = await runBash("blueutil --paired --format json");
+    const output = await runExecFile("blueutil", [
+      "--paired",
+      "--format",
+      "json",
+    ]);
     const parsed = JSON.parse(output);
     return parsed.map(
       (item: { address: string; name: string; connected: boolean }) => ({
@@ -202,19 +208,20 @@ export async function toggleMacBluetoothDeviceConnection(
   address: string,
   connect: boolean,
 ): Promise<void> {
-  await runBash(
-    `blueutil --${connect ? "connect" : "disconnect"} "${address}"`,
-  );
+  await runExecFile("blueutil", [
+    connect ? "--connect" : "--disconnect",
+    address,
+  ]);
 }
 
 export async function openMacWifiSettings(): Promise<void> {
-  await runBash(
-    'open "x-apple.systempreferences:com.apple.preference.network"',
-  );
+  await runExecFile("open", [
+    "x-apple.systempreferences:com.apple.preference.network",
+  ]);
 }
 
 export async function openMacBluetoothSettings(): Promise<void> {
-  await runBash(
-    'open "x-apple.systempreferences:com.apple.preferences.Bluetooth"',
-  );
+  await runExecFile("open", [
+    "x-apple.systempreferences:com.apple.preferences.Bluetooth",
+  ]);
 }
