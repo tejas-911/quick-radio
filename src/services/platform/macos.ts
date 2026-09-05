@@ -234,7 +234,30 @@ export async function getMacBluetoothStatus(): Promise<BluetoothStatus> {
     }
   }
 
-  // Stock macOS native check 1: defaults read
+  // Stock macOS native check 1: JXA bridge to IOBluetooth framework
+  try {
+    const output = await runExecFile("osascript", [
+      "-l",
+      "JavaScript",
+      "-e",
+      `ObjC.import('IOBluetooth');
+       try {
+         ObjC.bindFunction('IOBluetoothPreferenceGetControllerPowerState', ['int', []]);
+         $.IOBluetoothPreferenceGetControllerPowerState();
+       } catch (_) {
+         ObjC.bindFunction('IOBluetoothPreferenceGetControllerPowerState', ['i', []]);
+         $.IOBluetoothPreferenceGetControllerPowerState();
+       }`,
+    ]);
+    const trimmed = output.trim();
+    if (trimmed === "1" || trimmed === "0") {
+      return { isOn: trimmed === "1" };
+    }
+  } catch {
+    // Fallback to defaults read
+  }
+
+  // Stock macOS native check 2: defaults read
   try {
     const output = await runExecFile("defaults", [
       "read",
@@ -246,7 +269,7 @@ export async function getMacBluetoothStatus(): Promise<BluetoothStatus> {
     // Fallback to system_profiler
   }
 
-  // Stock macOS native check 2: system_profiler
+  // Stock macOS native check 3: system_profiler
   try {
     const output = await runExecFile("system_profiler", [
       "SPBluetoothDataType",
@@ -270,23 +293,92 @@ export async function toggleMacBluetooth(
   const current = await getMacBluetoothStatus();
   const next = targetState !== undefined ? targetState : !current.isOn;
 
+  // 1. If blueutil is installed, use it
   const blueutil = await getBlueutilPath();
   if (blueutil) {
-    await runExecFile(blueutil, ["--power", next ? "1" : "0"]);
-    return next;
+    try {
+      await runExecFile(blueutil, ["--power", next ? "1" : "0"]);
+      return next;
+    } catch {
+      // Fallback to stock native methods
+    }
   }
 
-  // Stock macOS: attempt toggle using native Shortcuts CLI
+  // 2. Stock macOS native method: JXA bridge to IOBluetooth framework
+  try {
+    await runExecFile("osascript", [
+      "-l",
+      "JavaScript",
+      "-e",
+      `ObjC.import('IOBluetooth');
+       var state = ${next ? 1 : 0};
+       try {
+         ObjC.bindFunction('IOBluetoothPreferenceSetControllerPowerState', ['void', ['int']]);
+         $.IOBluetoothPreferenceSetControllerPowerState(state);
+       } catch (_) {
+         ObjC.bindFunction('IOBluetoothPreferenceSetControllerPowerState', ['v', ['i']]);
+         $.IOBluetoothPreferenceSetControllerPowerState(state);
+       }`,
+    ]);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const verified = await getMacBluetoothStatus();
+    if (verified.isOn === next) {
+      return next;
+    }
+  } catch {
+    // Fallback to UI automation
+  }
+
+  // 3. Stock macOS native method: Control Center UI automation
+  try {
+    const script = `tell application "System Events"
+      tell process "ControlCenter"
+        set cc to (first menu bar item of menu bar 1 whose description is "Control Center" or description is "Control Centre")
+        if exists cc then
+          click cc
+          delay 0.3
+          try
+            click (first checkbox of group 1 of window "Control Center" whose title is "Bluetooth" or description is "Bluetooth")
+          on error
+            try
+              click checkbox 3 of group 1 of window "Control Center"
+            end try
+          end try
+          delay 0.2
+          key code 53
+        end if
+      end tell
+    end tell`;
+
+    await runExecFile("osascript", ["-e", script]);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const verified = await getMacBluetoothStatus();
+    if (verified.isOn === next) {
+      return next;
+    }
+  } catch {
+    // Fallback to Shortcuts if available
+  }
+
+  // 4. Fallback: check if user configured a Shortcut
   try {
     const shortcutName = next ? "Turn Bluetooth On" : "Turn Bluetooth Off";
     await runExecFile("shortcuts", ["run", shortcutName]);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     return next;
   } catch {
-    // Shortcuts not configured
+    // No shortcut
+  }
+
+  // 5. Final state check
+  const finalCheck = await getMacBluetoothStatus();
+  if (finalCheck.isOn === next) {
+    return next;
   }
 
   throw new Error(
-    "Toggling Bluetooth on macOS requires 'blueutil'. Please install it using 'brew install blueutil' or toggle Bluetooth via macOS Control Center.",
+    `Failed to turn Bluetooth ${next ? "ON" : "OFF"}. Please check system permissions or toggle Bluetooth via Control Center.`,
   );
 }
 
