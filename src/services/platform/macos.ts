@@ -273,6 +273,7 @@ export async function connectMacWifi(
   ssid: string,
   password?: string,
 ): Promise<void> {
+  clearSessionBaseline();
   const device = await getMacWifiDevice();
   const args = ["-setairportnetwork", device, ssid];
   if (password) {

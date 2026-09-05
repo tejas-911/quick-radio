@@ -358,12 +358,43 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
         }
       }
 
-      // 2. Gateway and session data in parallel via fast native netsh commands (~100ms total)
-      const [ipv4ConfigRes, ipv4SubRes, ipv6SubRes] = await Promise.allSettled([
-        runNetsh(["interface", "ipv4", "show", "config", ifaceName]),
-        runNetsh(["interface", "ipv4", "show", "subinterfaces"]),
-        runNetsh(["interface", "ipv6", "show", "subinterfaces"]),
-      ]);
+      // 2. Gateway, session data, and connection event in parallel via fast native commands (~100ms total)
+      const [ipv4ConfigRes, ipv4SubRes, ipv6SubRes, wlanEventRes] =
+        await Promise.allSettled([
+          runNetsh(["interface", "ipv4", "show", "config", ifaceName]),
+          runNetsh(["interface", "ipv4", "show", "subinterfaces"]),
+          runNetsh(["interface", "ipv6", "show", "subinterfaces"]),
+          execFileAsync(
+            "wevtutil",
+            [
+              "qe",
+              "Microsoft-Windows-WLAN-AutoConfig/Operational",
+              "/c:1",
+              "/q:*[System[(EventID=8001 or EventID=8003)]]",
+              "/rd:true",
+              "/f:xml",
+            ],
+            { windowsHide: true },
+          ),
+        ]);
+
+      let connectionKey: string | undefined;
+      if (wlanEventRes.status === "fulfilled" && wlanEventRes.value?.stdout) {
+        const xml = wlanEventRes.value.stdout;
+        const evId = xml.match(/<EventID>(\d+)<\/EventID>/)?.[1];
+        if (evId === "8003") {
+          clearSessionBaseline();
+        } else if (evId === "8001") {
+          const connId = xml.match(
+            /<Data Name=['"]ConnectionId['"]>([^<]+)<\/Data>/,
+          )?.[1];
+          const recId = xml.match(/<EventRecordID>(\d+)<\/EventRecordID>/)?.[1];
+          const time = xml.match(
+            /<TimeCreated SystemTime=['"]([^'"]+)['"]/,
+          )?.[1];
+          connectionKey = connId ? `${connId}_${recId || time}` : recId || time;
+        }
+      }
 
       if (ipv4ConfigRes.status === "fulfilled" && ipv4ConfigRes.value) {
         const gwMatch = ipv4ConfigRes.value.match(
@@ -430,6 +461,7 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
             ssidMatch[1].trim(),
             totalBytesIn,
             totalBytesOut,
+            connectionKey,
           );
         }
       }
@@ -729,6 +761,7 @@ export async function connectWindowsWifi(
     }
   }
 
+  clearSessionBaseline();
   invalidateWindowsWifiCache();
   await runNetsh(["wlan", "connect", `name=${ssid}`]);
 }

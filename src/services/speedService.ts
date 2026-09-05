@@ -121,6 +121,7 @@ export interface StoredBaseline {
   baselineOut: number;
   firstObservedTime: number;
   lastUpdatedTime: number;
+  connectionKey?: string;
 }
 
 const sessionCache = new Cache({ namespace: "wifi-session-usage" });
@@ -148,6 +149,7 @@ export function calculateSessionUsage(
   ssid: string | undefined,
   currentBytesIn: number,
   currentBytesOut: number,
+  connectionKey?: string,
 ): SessionDataUsage {
   const safeBytesIn =
     Number.isFinite(currentBytesIn) && currentBytesIn >= 0
@@ -182,7 +184,13 @@ export function calculateSessionUsage(
       }
     }
 
-    const isSsidSwitched = !lastActiveSsid || lastActiveSsid !== ssid;
+    const isConnectionChanged = Boolean(
+      connectionKey &&
+      baseline?.connectionKey &&
+      baseline.connectionKey !== connectionKey,
+    );
+    const isSsidSwitched =
+      !lastActiveSsid || lastActiveSsid !== ssid || isConnectionChanged;
     const countersWrapped =
       baseline !== undefined &&
       (safeBytesIn < baseline.baselineIn ||
@@ -195,9 +203,13 @@ export function calculateSessionUsage(
         baselineOut: safeBytesOut,
         firstObservedTime: now,
         lastUpdatedTime: now,
+        connectionKey,
       };
       sessionCache.set(ssid, JSON.stringify(baseline));
     } else {
+      if (connectionKey && !baseline.connectionKey) {
+        baseline.connectionKey = connectionKey;
+      }
       baseline.lastUpdatedTime = now;
       sessionCache.set(ssid, JSON.stringify(baseline));
     }
@@ -206,9 +218,15 @@ export function calculateSessionUsage(
     activeBaseline = baseline;
   } catch {
     // If Cache encounters an issue, fallback gracefully to in-memory state
+    const isConnectionChanged = Boolean(
+      connectionKey &&
+      activeBaseline?.connectionKey &&
+      activeBaseline.connectionKey !== connectionKey,
+    );
     if (
       !activeBaseline ||
       activeBaseline.ssid !== ssid ||
+      isConnectionChanged ||
       safeBytesIn < activeBaseline.baselineIn ||
       safeBytesOut < activeBaseline.baselineOut
     ) {
@@ -218,8 +236,12 @@ export function calculateSessionUsage(
         baselineOut: safeBytesOut,
         firstObservedTime: now,
         lastUpdatedTime: now,
+        connectionKey,
       };
     } else {
+      if (connectionKey && !activeBaseline.connectionKey) {
+        activeBaseline.connectionKey = connectionKey;
+      }
       activeBaseline.lastUpdatedTime = now;
     }
     baseline = activeBaseline;

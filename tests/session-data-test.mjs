@@ -219,11 +219,26 @@ assert.equal(
   0,
   "Observation following explicit clearSessionBaseline() must start at 0",
 );
+// Test K: Reconnecting to SAME SSID with a new connectionKey (e.g. reconnect outside Raycast)
+const resKey1 = calculateSessionUsage("HomeFiber", 100_000_000, 20_000_000, "conn_0x1");
+assert.equal(resKey1.downloadedBytes, 0);
+
+const resKey1Traffic = calculateSessionUsage("HomeFiber", 110_000_000, 25_000_000, "conn_0x1");
+assert.equal(resKey1Traffic.downloadedBytes, 10_000_000);
+assert.equal(resKey1Traffic.uploadedBytes, 5_000_000);
+
+// Disconnect & reconnect occurred outside Raycast (new connectionKey without passing undefined)
+const resKey2 = calculateSessionUsage("HomeFiber", 110_000_000, 25_000_000, "conn_0x2");
 assert.equal(
-  resAfterClear.uploadedBytes,
+  resKey2.downloadedBytes,
   0,
-  "Observation following explicit clearSessionBaseline() must start at 0",
+  "New connectionKey on same SSID must establish fresh baseline at 0 even if undefined was never passed",
 );
+assert.equal(resKey2.uploadedBytes, 0);
+
+const resKey2Traffic = calculateSessionUsage("HomeFiber", 115_000_000, 27_000_000, "conn_0x2");
+assert.equal(resKey2Traffic.downloadedBytes, 5_000_000);
+assert.equal(resKey2Traffic.uploadedBytes, 2_000_000);
 
 console.log("✓ calculateSessionUsage Cache tests passed!");
 
