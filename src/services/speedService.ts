@@ -127,6 +127,23 @@ const sessionCache = new Cache({ namespace: "wifi-session-usage" });
 const LAST_SSID_KEY = "__active_ssid__";
 let activeBaseline: StoredBaseline | undefined;
 
+export function clearSessionBaseline(): void {
+  try {
+    sessionCache.clear();
+  } catch {
+    try {
+      const lastActiveSsid = sessionCache.get(LAST_SSID_KEY);
+      if (lastActiveSsid) {
+        sessionCache.remove(lastActiveSsid);
+      }
+      sessionCache.remove(LAST_SSID_KEY);
+    } catch {
+      // Ignore cache error fallback
+    }
+  }
+  activeBaseline = undefined;
+}
+
 export function calculateSessionUsage(
   ssid: string | undefined,
   currentBytesIn: number,
@@ -142,6 +159,7 @@ export function calculateSessionUsage(
       : 0;
 
   if (!ssid) {
+    clearSessionBaseline();
     return {
       downloadedBytes: 0,
       uploadedBytes: 0,
@@ -164,8 +182,7 @@ export function calculateSessionUsage(
       }
     }
 
-    const isSsidSwitched =
-      lastActiveSsid !== undefined && lastActiveSsid !== ssid;
+    const isSsidSwitched = !lastActiveSsid || lastActiveSsid !== ssid;
     const countersWrapped =
       baseline !== undefined &&
       (safeBytesIn < baseline.baselineIn ||

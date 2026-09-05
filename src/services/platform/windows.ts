@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import {
   calculateSessionUsage,
+  clearSessionBaseline,
   getCachedInternetSpeed,
   type SessionDataUsage,
 } from "../speedService";
@@ -432,6 +433,8 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
           );
         }
       }
+    } else {
+      clearSessionBaseline();
     }
 
     return {
@@ -454,6 +457,7 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
     };
   } catch {
+    clearSessionBaseline();
     return { isOn: false, isConnected: false };
   }
 }
@@ -464,6 +468,9 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
 export async function toggleWindowsWifi(
   targetState?: boolean,
 ): Promise<boolean> {
+  if (targetState === false) {
+    clearSessionBaseline();
+  }
   return toggleWindowsRadio(1, targetState);
 }
 
@@ -730,6 +737,7 @@ export async function connectWindowsWifi(
  * Disconnects the active Wi-Fi connection.
  */
 export async function disconnectWindowsWifi(): Promise<void> {
+  clearSessionBaseline();
   invalidateWindowsWifiCache();
   await runNetsh(["wlan", "disconnect"]);
 }
