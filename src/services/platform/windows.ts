@@ -946,11 +946,22 @@ export async function toggleWindowsBluetoothDeviceConnection(
     throw new Error("Quick Radios helper executable not found");
   }
 
-  const { stdout } = await execFileAsync(
-    helperExe,
-    [connect ? "connect" : "disconnect", macHex],
-    { windowsHide: true },
-  );
+  let stdout = "";
+  try {
+    const res = await execFileAsync(
+      helperExe,
+      [connect ? "connect" : "disconnect", macHex],
+      { windowsHide: true },
+    );
+    stdout = res.stdout;
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string | Buffer; message?: string };
+    stdout = (execErr?.stdout ?? "").toString();
+    if (!stdout && err instanceof Error) {
+      throw err;
+    }
+  }
+
   const trimmed = stdout.trim();
   if (connect) {
     if (trimmed.includes("Connected")) {
@@ -964,13 +975,18 @@ export async function toggleWindowsBluetoothDeviceConnection(
     if (trimmed.startsWith("Error:")) {
       throw new Error(trimmed);
     }
+    throw new Error(trimmed || "Failed to connect device");
   } else {
     if (trimmed.includes("Disconnected")) {
       return;
     }
+    if (trimmed.includes("FailedToDisconnect")) {
+      throw new Error("Failed to disconnect device");
+    }
     if (trimmed.startsWith("Error:")) {
       throw new Error(trimmed);
     }
+    throw new Error(trimmed || "Failed to disconnect device");
   }
 }
 

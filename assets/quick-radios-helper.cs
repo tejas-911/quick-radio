@@ -240,9 +240,13 @@ class QuickRadiosHelper {
             var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
             if (task.Wait(350)) {
                 if (task.Result != null) {
-                    return task.Result.ConnectionStatus == BluetoothConnectionStatus.Connected ? 1 : 0;
+                    var isConn = task.Result.ConnectionStatus == BluetoothConnectionStatus.Connected;
+                    try {
+                        task.Result.Dispose();
+                    } catch {}
+                    return isConn ? 1 : 0;
                 }
-                return 0;
+                return -1;
             }
         } catch {}
         return -1;
@@ -404,9 +408,9 @@ class QuickRadiosHelper {
                     BluetoothSetServiceState(IntPtr.Zero, ref btdi, ref currentGuid, 1u);
                 }
 
-                // Poll early for connection (up to 2.5s for primary profiles, 500ms for ancillary profiles)
+                // Poll early for connection (up to 2.5s for top primary profile, 500ms for secondary/ancillary profiles)
                 int prio = GetServicePriority(g);
-                int pollLimit = (prio >= 70) ? 2500 : 500;
+                int pollLimit = (!hasCycledPrimary || prio == 100) ? 2500 : 500;
                 int pollElapsed = 0;
                 while (pollElapsed < pollLimit) {
                     if (_operationComplete) break;
@@ -426,42 +430,55 @@ class QuickRadiosHelper {
                 return 0;
             }
 
-            // Fallback: trigger RFCOMM discovery only if still disconnected
-            try {
-                var op = BluetoothDevice.FromBluetoothAddressAsync(address);
-                var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
-                if (task.Wait(800) && task.Result != null) {
-                    var btDev = task.Result;
-                    if (btDev.ConnectionStatus == BluetoothConnectionStatus.Connected) {
-                        CompleteSuccess("Connected");
-                        return 0;
-                    }
+            // Fallback: trigger RFCOMM discovery only if device has no primary audio or input profiles
+            bool hasAudioOrInput = false;
+            foreach (Guid g in services) {
+                if (GetServicePriority(g) >= 80) {
+                    hasAudioOrInput = true;
+                    break;
+                }
+            }
 
-                    var rfcommOp = btDev.GetRfcommServicesAsync();
-                    var rfcommTask = System.WindowsRuntimeSystemExtensions.AsTask(rfcommOp);
-                    int rfcommElapsed = 0;
-                    while (rfcommElapsed < 2000) {
-                        if (_operationComplete) break;
-                        if (GetDeviceConnectionState(address) == 1) {
+            if (!hasAudioOrInput) {
+                try {
+                    var op = BluetoothDevice.FromBluetoothAddressAsync(address);
+                    var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
+                    if (task.Wait(800) && task.Result != null) {
+                        var btDev = task.Result;
+                        if (btDev.ConnectionStatus == BluetoothConnectionStatus.Connected) {
+                            try { btDev.Dispose(); } catch {}
                             CompleteSuccess("Connected");
                             return 0;
                         }
-                        if (rfcommTask.Wait(200)) break;
-                        rfcommElapsed += 200;
-                    }
-                }
-            } catch {}
 
-            // Final polling loop up to remaining time (total max wait ~8s)
+                        var rfcommOp = btDev.GetRfcommServicesAsync();
+                        var rfcommTask = System.WindowsRuntimeSystemExtensions.AsTask(rfcommOp);
+                        int rfcommElapsed = 0;
+                        while (rfcommElapsed < 1500) {
+                            if (_operationComplete) break;
+                            if (GetDeviceConnectionState(address) == 1) {
+                                try { btDev.Dispose(); } catch {}
+                                CompleteSuccess("Connected");
+                                return 0;
+                            }
+                            if (rfcommTask.Wait(200)) break;
+                            rfcommElapsed += 200;
+                        }
+                        try { btDev.Dispose(); } catch {}
+                    }
+                } catch {}
+            }
+
+            // Final polling loop (up to 1.5s)
             int finalElapsed = 0;
-            while (finalElapsed < 3000) {
+            while (finalElapsed < 1500) {
                 if (_operationComplete) break;
                 if (GetDeviceConnectionState(address) == 1) {
                     CompleteSuccess("Connected");
                     return 0;
                 }
-                Thread.Sleep(200);
-                finalElapsed += 200;
+                Thread.Sleep(150);
+                finalElapsed += 150;
             }
 
             _operationComplete = true;
@@ -503,8 +520,16 @@ class QuickRadiosHelper {
                 }
             }
 
-            // ONLY if no installed services were found, fall back to standard profiles
-            if (servicesToDisable.Count == 0) {
+            // Fall back to standard profiles if no primary connection profiles were found in installed services
+            bool hasPrimaryProfile = false;
+            foreach (Guid g in servicesToDisable) {
+                if (GetServicePriority(g) >= 70) {
+                    hasPrimaryProfile = true;
+                    break;
+                }
+            }
+
+            if (!hasPrimaryProfile) {
                 string[] standardProfiles = new string[] {
                     "0000110b-0000-1000-8000-00805f9b34fb", // Audio Sink
                     "0000111e-0000-1000-8000-00805f9b34fb", // Hands-Free
@@ -576,8 +601,13 @@ class QuickRadiosHelper {
             }
 
             _operationComplete = true;
-            CompleteSuccess("Disconnected");
-            return 0;
+            if (GetDeviceConnectionState(address) == 0) {
+                CompleteSuccess("Disconnected");
+                return 0;
+            }
+
+            Console.WriteLine("FailedToDisconnect");
+            return 1;
         } catch (Exception ex) {
             Console.WriteLine("Error: " + ex.Message);
             return 2;
@@ -647,6 +677,7 @@ class QuickRadiosHelper {
                             var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
                             if (task.Wait(400) && task.Result != null) {
                                 isConnected = (task.Result.ConnectionStatus == BluetoothConnectionStatus.Connected);
+                                try { task.Result.Dispose(); } catch {}
                             }
                         } catch {}
 
