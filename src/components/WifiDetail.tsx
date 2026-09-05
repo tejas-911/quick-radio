@@ -1,6 +1,7 @@
 import { Color, Icon, List } from "@raycast/api";
 import QRCode from "qrcode";
 import { WifiNetwork, WifiStatus } from "../services/types";
+import { formatBytes } from "../services/wifiService";
 
 interface WifiDetailProps {
   network: WifiNetwork;
@@ -30,15 +31,18 @@ export function WifiDetail({
       markdown += `**Internet Speed**: ⏳ Measuring...  \n`;
     }
     if (status.sessionData) {
-      const downGb = (
-        status.sessionData.downloadedBytes /
-        (1024 * 1024 * 1024)
-      ).toFixed(2);
-      const upGb = (
-        status.sessionData.uploadedBytes /
-        (1024 * 1024 * 1024)
-      ).toFixed(2);
-      markdown += `**Session Data**: ⬇️ ${downGb} GB / ⬆️ ${upGb} GB  \n`;
+      const downSession = formatBytes(status.sessionData.downloadedBytes);
+      const upSession = formatBytes(status.sessionData.uploadedBytes);
+      markdown += `**Session Data**: ⬇️ ${downSession} / ⬆️ ${upSession}  \n`;
+
+      if (
+        status.sessionData.totalBytesIn > 0 ||
+        status.sessionData.totalBytesOut > 0
+      ) {
+        const downTotal = formatBytes(status.sessionData.totalBytesIn);
+        const upTotal = formatBytes(status.sessionData.totalBytesOut);
+        markdown += `**Total Interface Data**: ⬇️ ${downTotal} / ⬆️ ${upTotal}  \n`;
+      }
     }
     if (status.ipAddress) {
       markdown += `**IP Address**: \`${status.ipAddress}\`  \n`;
@@ -137,12 +141,25 @@ export function WifiDetail({
             <>
               <List.Item.Detail.Metadata.Label
                 title="Session Downloaded"
-                text={`${(status.sessionData.downloadedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`}
+                text={formatBytes(status.sessionData.downloadedBytes)}
               />
               <List.Item.Detail.Metadata.Label
                 title="Session Uploaded"
-                text={`${(status.sessionData.uploadedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`}
+                text={formatBytes(status.sessionData.uploadedBytes)}
               />
+              {(status.sessionData.totalBytesIn > 0 ||
+                status.sessionData.totalBytesOut > 0) && (
+                <>
+                  <List.Item.Detail.Metadata.Label
+                    title="Total Interface Downloaded"
+                    text={formatBytes(status.sessionData.totalBytesIn)}
+                  />
+                  <List.Item.Detail.Metadata.Label
+                    title="Total Interface Uploaded"
+                    text={formatBytes(status.sessionData.totalBytesOut)}
+                  />
+                </>
+              )}
             </>
           )}
           <List.Item.Detail.Metadata.Separator />

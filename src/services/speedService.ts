@@ -1,3 +1,5 @@
+import { Cache } from "@raycast/api";
+
 export interface InternetSpeedResult {
   downloadMbps: number;
   uploadMbps: number;
@@ -113,12 +115,16 @@ export function getCachedInternetSpeed(): InternetSpeedResult | undefined {
 /**
  * Tracks session baseline data usage for a specific Wi-Fi SSID connection.
  */
-interface StoredBaseline {
+export interface StoredBaseline {
   ssid: string;
   baselineIn: number;
   baselineOut: number;
+  firstObservedTime: number;
+  lastUpdatedTime: number;
 }
 
+const sessionCache = new Cache({ namespace: "wifi-session-usage" });
+const LAST_SSID_KEY = "__active_ssid__";
 let activeBaseline: StoredBaseline | undefined;
 
 export function calculateSessionUsage(
@@ -135,28 +141,65 @@ export function calculateSessionUsage(
     };
   }
 
-  // If new network, baseline not set yet, or interface counters reset
-  if (
-    !activeBaseline ||
-    activeBaseline.ssid !== ssid ||
-    currentBytesIn < activeBaseline.baselineIn ||
-    currentBytesOut < activeBaseline.baselineOut
-  ) {
-    activeBaseline = {
-      ssid,
-      baselineIn: currentBytesIn,
-      baselineOut: currentBytesOut,
-    };
+  const now = Date.now();
+  let baseline: StoredBaseline | undefined;
+
+  try {
+    const lastActiveSsid = sessionCache.get(LAST_SSID_KEY);
+    const cachedStr = sessionCache.get(ssid);
+    if (cachedStr) {
+      try {
+        baseline = JSON.parse(cachedStr) as StoredBaseline;
+      } catch {
+        baseline = undefined;
+      }
+    }
+
+    const isSsidSwitched =
+      lastActiveSsid !== undefined && lastActiveSsid !== ssid;
+    const countersWrapped =
+      baseline !== undefined &&
+      (currentBytesIn < baseline.baselineIn ||
+        currentBytesOut < baseline.baselineOut);
+
+    if (!baseline || isSsidSwitched || countersWrapped) {
+      baseline = {
+        ssid,
+        baselineIn: currentBytesIn,
+        baselineOut: currentBytesOut,
+        firstObservedTime: now,
+        lastUpdatedTime: now,
+      };
+      sessionCache.set(ssid, JSON.stringify(baseline));
+    } else {
+      baseline.lastUpdatedTime = now;
+      sessionCache.set(ssid, JSON.stringify(baseline));
+    }
+
+    sessionCache.set(LAST_SSID_KEY, ssid);
+  } catch {
+    // If Cache encounters an issue, fallback gracefully to in-memory state
+    if (
+      !activeBaseline ||
+      activeBaseline.ssid !== ssid ||
+      currentBytesIn < activeBaseline.baselineIn ||
+      currentBytesOut < activeBaseline.baselineOut
+    ) {
+      activeBaseline = {
+        ssid,
+        baselineIn: currentBytesIn,
+        baselineOut: currentBytesOut,
+        firstObservedTime: now,
+        lastUpdatedTime: now,
+      };
+    } else {
+      activeBaseline.lastUpdatedTime = now;
+    }
+    baseline = activeBaseline;
   }
 
-  const downloadedBytes = Math.max(
-    0,
-    currentBytesIn - activeBaseline.baselineIn,
-  );
-  const uploadedBytes = Math.max(
-    0,
-    currentBytesOut - activeBaseline.baselineOut,
-  );
+  const downloadedBytes = Math.max(0, currentBytesIn - baseline.baselineIn);
+  const uploadedBytes = Math.max(0, currentBytesOut - baseline.baselineOut);
 
   return {
     downloadedBytes,
@@ -164,6 +207,36 @@ export function calculateSessionUsage(
     totalBytesIn: currentBytesIn,
     totalBytesOut: currentBytesOut,
   };
+}
+
+/**
+ * Dynamically formats byte counts into human-readable strings (B, KB, MB, GB, TB, PB)
+ * with adaptive decimal precision.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let unitIndex = 0;
+  let val = bytes;
+
+  while (val >= 1024 && unitIndex < units.length - 1) {
+    val /= 1024;
+    unitIndex++;
+  }
+
+  if (unitIndex === 0) {
+    return `${Math.round(val)} B`;
+  }
+
+  if (parseFloat(val.toFixed(2)) >= 1024 && unitIndex < units.length - 1) {
+    val /= 1024;
+    unitIndex++;
+  }
+
+  return `${val.toFixed(2)} ${units[unitIndex]}`;
 }
 
 export function formatGigaBytes(bytes: number): string {

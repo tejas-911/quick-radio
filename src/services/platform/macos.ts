@@ -7,6 +7,11 @@ import {
   BluetoothDevice,
   BluetoothDeviceCategory,
 } from "../types";
+import {
+  calculateSessionUsage,
+  getCachedInternetSpeed,
+  SessionDataUsage,
+} from "../speedService";
 
 const execFileAsync = promisify(execFile);
 
@@ -29,6 +34,67 @@ async function getMacWifiDevice(): Promise<string> {
   } catch {
     return "en0";
   }
+}
+
+function parseNetstatBytes(
+  output: string,
+  device: string,
+): { bytesIn: number; bytesOut: number } | undefined {
+  try {
+    const lines = output
+      .trim()
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length < 2) return undefined;
+
+    const header = lines[0].split(/\s+/);
+    let ibytesIdx = header.findIndex((h) => /^ibytes$/i.test(h));
+    let obytesIdx = header.findIndex((h) => /^obytes$/i.test(h));
+
+    if (ibytesIdx === -1 || obytesIdx === -1) {
+      ibytesIdx = 6;
+      obytesIdx = 9;
+    }
+
+    const deviceLower = device.toLowerCase();
+
+    // Look for Link row first (e.g. contains <Link) which carries cumulative hardware counters
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(/\s+/);
+      if (parts.length > Math.max(ibytesIdx, obytesIdx)) {
+        const lineDev = parts[0].toLowerCase();
+        if (lineDev === deviceLower || lineDev.startsWith(deviceLower)) {
+          if (parts.some((p) => p.includes("<Link"))) {
+            const bytesIn = parseInt(parts[ibytesIdx], 10);
+            const bytesOut = parseInt(parts[obytesIdx], 10);
+            if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
+              return { bytesIn, bytesOut };
+            }
+          }
+        }
+      }
+    }
+
+    // If no Link row matched, parse the first row matching the device name
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(/\s+/);
+      if (parts.length > Math.max(ibytesIdx, obytesIdx)) {
+        const lineDev = parts[0].toLowerCase();
+        if (lineDev === deviceLower || lineDev.startsWith(deviceLower)) {
+          const bytesIn = parseInt(parts[ibytesIdx], 10);
+          const bytesOut = parseInt(parts[obytesIdx], 10);
+          if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
+            return { bytesIn, bytesOut };
+          }
+        }
+      }
+    }
+  } catch {
+    // Netstat parse error fallback
+  }
+
+  return undefined;
 }
 
 export async function getMacWifiStatus(): Promise<WifiStatus> {
@@ -72,6 +138,27 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
 
     const isConnected = Boolean(ssidMatch && ssidMatch[1].trim());
 
+    let sessionData: SessionDataUsage | undefined;
+    if (isConnected && ssidMatch) {
+      try {
+        const netstatOutput = await runExecFile("netstat", [
+          "-b",
+          "-I",
+          device,
+        ]);
+        const counters = parseNetstatBytes(netstatOutput, device);
+        if (counters) {
+          sessionData = calculateSessionUsage(
+            ssidMatch[1].trim(),
+            counters.bytesIn,
+            counters.bytesOut,
+          );
+        }
+      } catch {
+        // Netstat query fallback
+      }
+    }
+
     return {
       isOn: true,
       isConnected,
@@ -80,6 +167,8 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
       channel: channelMatch ? channelMatch[1].trim() : undefined,
       signalPercent,
       ipAddress,
+      sessionData,
+      internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
     };
   } catch {
     return { isOn: false, isConnected: false };

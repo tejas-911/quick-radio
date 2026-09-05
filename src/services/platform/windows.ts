@@ -215,6 +215,36 @@ if ($radio) {
   return result === "On" || result === "1";
 }
 
+function parseSubinterfaceBytes(
+  output: string,
+  ifaceName: string,
+): { bytesIn: number; bytesOut: number } | undefined {
+  try {
+    const lines = output.split("\n").map((l) => l.trim());
+    const targetIfaceLower = ifaceName.toLowerCase();
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      if (parts.length >= 5) {
+        const lineIface = parts.slice(4).join(" ").toLowerCase();
+        if (
+          lineIface === targetIfaceLower ||
+          lineIface.includes(targetIfaceLower) ||
+          (targetIfaceLower.includes("wi-fi") && lineIface.includes("wi-fi"))
+        ) {
+          const bytesIn = parseInt(parts[2], 10);
+          const bytesOut = parseInt(parts[3], 10);
+          if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
+            return { bytesIn, bytesOut };
+          }
+        }
+      }
+    }
+  } catch {
+    // Return undefined on parsing failure
+  }
+  return undefined;
+}
+
 /**
  * Retrieves the current Wi-Fi connection and interface status.
  */
@@ -291,9 +321,10 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       }
 
       // 2. Gateway and session data in parallel via fast native netsh commands (~100ms total)
-      const [ipv4ConfigRes, subRes] = await Promise.allSettled([
+      const [ipv4ConfigRes, ipv4SubRes, ipv6SubRes] = await Promise.allSettled([
         runNetsh(["interface", "ipv4", "show", "config", ifaceName]),
         runNetsh(["interface", "ipv4", "show", "subinterfaces"]),
+        runNetsh(["interface", "ipv6", "show", "subinterfaces"]),
       ]);
 
       if (ipv4ConfigRes.status === "fulfilled" && ipv4ConfigRes.value) {
@@ -327,35 +358,41 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
         }
       }
 
-      if (subRes.status === "fulfilled" && subRes.value && ssidMatch) {
-        try {
-          const lines = subRes.value.split("\n").map((l) => l.trim());
-          const targetIfaceLower = ifaceName.toLowerCase();
-          for (const line of lines) {
-            const parts = line.split(/\s+/);
-            if (parts.length >= 5) {
-              const lineIface = parts.slice(4).join(" ").toLowerCase();
-              if (
-                lineIface === targetIfaceLower ||
-                lineIface.includes(targetIfaceLower) ||
-                (targetIfaceLower.includes("wi-fi") &&
-                  lineIface.includes("wi-fi"))
-              ) {
-                const bytesIn = parseInt(parts[2], 10);
-                const bytesOut = parseInt(parts[3], 10);
-                if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
-                  sessionData = calculateSessionUsage(
-                    ssidMatch[1].trim(),
-                    bytesIn,
-                    bytesOut,
-                  );
-                  break;
-                }
-              }
-            }
+      if (ssidMatch) {
+        let totalBytesIn = 0;
+        let totalBytesOut = 0;
+        let hasValidCounters = false;
+
+        if (ipv4SubRes.status === "fulfilled" && ipv4SubRes.value) {
+          const ipv4Counters = parseSubinterfaceBytes(
+            ipv4SubRes.value,
+            ifaceName,
+          );
+          if (ipv4Counters) {
+            totalBytesIn += ipv4Counters.bytesIn;
+            totalBytesOut += ipv4Counters.bytesOut;
+            hasValidCounters = true;
           }
-        } catch {
-          // Fallback if subinterface query fails
+        }
+
+        if (ipv6SubRes.status === "fulfilled" && ipv6SubRes.value) {
+          const ipv6Counters = parseSubinterfaceBytes(
+            ipv6SubRes.value,
+            ifaceName,
+          );
+          if (ipv6Counters) {
+            totalBytesIn += ipv6Counters.bytesIn;
+            totalBytesOut += ipv6Counters.bytesOut;
+            hasValidCounters = true;
+          }
+        }
+
+        if (hasValidCounters) {
+          sessionData = calculateSessionUsage(
+            ssidMatch[1].trim(),
+            totalBytesIn,
+            totalBytesOut,
+          );
         }
       }
     }
