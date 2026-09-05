@@ -10,12 +10,7 @@ import type {
   BluetoothDevice,
   BluetoothDeviceCategory,
 } from "../types";
-import {
-  calculateSessionUsage,
-  clearSessionBaseline,
-  getCachedInternetSpeed,
-  type SessionDataUsage,
-} from "../speedService";
+import { getCachedInternetSpeed } from "../speedService";
 
 let environmentAssetsPath: string | undefined;
 try {
@@ -327,7 +322,6 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
 
     let ipAddress: string | undefined;
     let gateway: string | undefined;
-    let sessionData: SessionDataUsage | undefined;
 
     if (isConnected) {
       // 1. IP Address from Node.js in-memory network interfaces (0ms)
@@ -358,43 +352,10 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
         }
       }
 
-      // 2. Gateway, session data, and connection event in parallel via fast native commands (~100ms total)
-      const [ipv4ConfigRes, ipv4SubRes, ipv6SubRes, wlanEventRes] =
-        await Promise.allSettled([
-          runNetsh(["interface", "ipv4", "show", "config", ifaceName]),
-          runNetsh(["interface", "ipv4", "show", "subinterfaces"]),
-          runNetsh(["interface", "ipv6", "show", "subinterfaces"]),
-          execFileAsync(
-            "wevtutil",
-            [
-              "qe",
-              "Microsoft-Windows-WLAN-AutoConfig/Operational",
-              "/c:1",
-              "/q:*[System[(EventID=8001 or EventID=8003)]]",
-              "/rd:true",
-              "/f:xml",
-            ],
-            { windowsHide: true },
-          ),
-        ]);
-
-      let connectionKey: string | undefined;
-      if (wlanEventRes.status === "fulfilled" && wlanEventRes.value?.stdout) {
-        const xml = wlanEventRes.value.stdout;
-        const evId = xml.match(/<EventID>(\d+)<\/EventID>/)?.[1];
-        if (evId === "8003") {
-          clearSessionBaseline();
-        } else if (evId === "8001") {
-          const connId = xml.match(
-            /<Data Name=['"]ConnectionId['"]>([^<]+)<\/Data>/,
-          )?.[1];
-          const recId = xml.match(/<EventRecordID>(\d+)<\/EventRecordID>/)?.[1];
-          const time = xml.match(
-            /<TimeCreated SystemTime=['"]([^'"]+)['"]/,
-          )?.[1];
-          connectionKey = connId ? `${connId}_${recId || time}` : recId || time;
-        }
-      }
+      // 2. Gateway and IP details via fast native netsh command (~30ms total)
+      const [ipv4ConfigRes] = await Promise.allSettled([
+        runNetsh(["interface", "ipv4", "show", "config", ifaceName]),
+      ]);
 
       if (ipv4ConfigRes.status === "fulfilled" && ipv4ConfigRes.value) {
         const gwMatch = ipv4ConfigRes.value.match(
@@ -427,46 +388,8 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
         }
       }
 
-      if (ssidMatch) {
-        let totalBytesIn = 0;
-        let totalBytesOut = 0;
-        let hasValidCounters = false;
-
-        if (ipv4SubRes.status === "fulfilled" && ipv4SubRes.value) {
-          const ipv4Counters = parseSubinterfaceBytes(
-            ipv4SubRes.value,
-            ifaceName,
-          );
-          if (ipv4Counters) {
-            totalBytesIn += ipv4Counters.bytesIn;
-            totalBytesOut += ipv4Counters.bytesOut;
-            hasValidCounters = true;
-          }
-        }
-
-        if (ipv6SubRes.status === "fulfilled" && ipv6SubRes.value) {
-          const ipv6Counters = parseSubinterfaceBytes(
-            ipv6SubRes.value,
-            ifaceName,
-          );
-          if (ipv6Counters) {
-            totalBytesIn += ipv6Counters.bytesIn;
-            totalBytesOut += ipv6Counters.bytesOut;
-            hasValidCounters = true;
-          }
-        }
-
-        if (hasValidCounters) {
-          sessionData = calculateSessionUsage(
-            ssidMatch[1].trim(),
-            totalBytesIn,
-            totalBytesOut,
-            connectionKey,
-          );
-        }
-      }
-    } else {
-      clearSessionBaseline();
+      // Note: Wi-Fi session data tracking (calculateSessionUsage via parseSubinterfaceBytes)
+      // is preserved in speedService.ts as a future feature to be enabled.
     }
 
     return {
@@ -485,11 +408,9 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       transmitRateMbps: txMatch ? parseFloat(txMatch[1]) : undefined,
       ipAddress,
       gateway,
-      sessionData,
       internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
     };
   } catch {
-    clearSessionBaseline();
     return { isOn: false, isConnected: false };
   }
 }
@@ -500,9 +421,6 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
 export async function toggleWindowsWifi(
   targetState?: boolean,
 ): Promise<boolean> {
-  if (targetState === false) {
-    clearSessionBaseline();
-  }
   return toggleWindowsRadio(1, targetState);
 }
 
@@ -761,7 +679,6 @@ export async function connectWindowsWifi(
     }
   }
 
-  clearSessionBaseline();
   invalidateWindowsWifiCache();
   await runNetsh(["wlan", "connect", `name=${ssid}`]);
 }
@@ -770,7 +687,6 @@ export async function connectWindowsWifi(
  * Disconnects the active Wi-Fi connection.
  */
 export async function disconnectWindowsWifi(): Promise<void> {
-  clearSessionBaseline();
   invalidateWindowsWifiCache();
   await runNetsh(["wlan", "disconnect"]);
 }
