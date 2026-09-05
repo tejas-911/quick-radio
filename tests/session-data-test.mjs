@@ -412,6 +412,128 @@ if (process.platform === "win32") {
   console.log("✓ Live Windows Netsh query verified successfully!");
 }
 
+// ---------------------------------------------------------------
+// 6. Test WLAN Event Multi-Adapter & SSID Isolation
+// ---------------------------------------------------------------
+console.log("\n--- 6. Testing WLAN event multi-adapter isolation ---");
+
+function unescapeXml(str) {
+  return str
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function parseWlanEventBlocks(rawXml, currentGuid, currentSsid) {
+  const eventBlocks = rawXml.match(/<Event[\s\S]*?<\/Event>/gi) || [rawXml];
+  let connectionKey;
+  let cleared = false;
+
+  for (const evXml of eventBlocks) {
+    const evId = evXml.match(/<EventID>(\d+)<\/EventID>/)?.[1];
+    const evGuid = evXml.match(
+      /<Data Name=['"]InterfaceGuid['"]>([^<]+)<\/Data>/i,
+    )?.[1];
+    const evSsid = evXml.match(
+      /<Data Name=['"]SSID['"]>([^<]+)<\/Data>/i,
+    )?.[1];
+
+    const cleanEvGuid = evGuid
+      ? (evGuid.startsWith("{") ? evGuid : `{${evGuid}}`).trim().toLowerCase()
+      : undefined;
+    if (
+      currentGuid &&
+      cleanEvGuid &&
+      cleanEvGuid !== currentGuid
+    ) {
+      continue;
+    }
+
+    const cleanEvSsid = evSsid
+      ? unescapeXml(evSsid).trim().toLowerCase()
+      : undefined;
+    if (
+      currentSsid &&
+      cleanEvSsid &&
+      cleanEvSsid !== currentSsid.toLowerCase()
+    ) {
+      continue;
+    }
+
+    if (evId === "8003") {
+      cleared = true;
+    } else if (evId === "8001") {
+      const connId = evXml.match(
+        /<Data Name=['"]ConnectionId['"]>([^<]+)<\/Data>/i,
+      )?.[1];
+      const recId = evXml.match(
+        /<EventRecordID>(\d+)<\/EventRecordID>/i,
+      )?.[1];
+      const time = evXml.match(
+        /<TimeCreated SystemTime=['"]([^'"]+)['"]/i,
+      )?.[1];
+      connectionKey = connId ? `${connId}_${recId || time}` : recId || time;
+    }
+    break;
+  }
+  return { connectionKey, cleared };
+}
+
+const mockSecondaryAdapterDisconnectXml = `
+<Event><System><EventID>8003</EventID><TimeCreated SystemTime='2026-09-05T15:00:00Z'/><EventRecordID>9999</EventRecordID></System>
+<EventData>
+  <Data Name='InterfaceGuid'>{11111111-2222-3333-4444-555555555555}</Data>
+  <Data Name='SSID'>DIRECT-VirtualNetwork</Data>
+  <Data Name='ConnectionId'>0x99</Data>
+</EventData></Event>
+<Event><System><EventID>8001</EventID><TimeCreated SystemTime='2026-09-05T14:50:00Z'/><EventRecordID>1234</EventRecordID></System>
+<EventData>
+  <Data Name='InterfaceGuid'>{784fe8a4-af63-409d-a475-f1be5a05d166}</Data>
+  <Data Name='SSID'>iBus@MAHE</Data>
+  <Data Name='ConnectionId'>0xe</Data>
+</EventData></Event>
+`;
+
+const parsedSecondary = parseWlanEventBlocks(
+  mockSecondaryAdapterDisconnectXml,
+  "{784fe8a4-af63-409d-a475-f1be5a05d166}",
+  "iBus@MAHE",
+);
+assert.equal(
+  parsedSecondary.cleared,
+  false,
+  "Secondary adapter disconnect (8003) must NOT clear primary adapter baseline!",
+);
+assert.equal(
+  parsedSecondary.connectionKey,
+  "0xe_1234",
+  "Must find primary adapter event despite secondary adapter event preceding it!",
+);
+
+// Test XML entity unescaping in SSID (e.g., AT&T)
+const mockEscapedSsidXml = `
+<Event><System><EventID>8001</EventID><TimeCreated SystemTime='2026-09-05T15:10:00Z'/><EventRecordID>5555</EventRecordID></System>
+<EventData>
+  <Data Name='InterfaceGuid'>{784fe8a4-af63-409d-a475-f1be5a05d166}</Data>
+  <Data Name='SSID'>AT&amp;T-Wifi</Data>
+  <Data Name='ConnectionId'>0xf</Data>
+</EventData></Event>
+`;
+const parsedEscaped = parseWlanEventBlocks(
+  mockEscapedSsidXml,
+  "{784fe8a4-af63-409d-a475-f1be5a05d166}",
+  "AT&T-Wifi",
+);
+assert.equal(
+  parsedEscaped.connectionKey,
+  "0xf_5555",
+  "Escaped XML SSID must match unescaped target SSID",
+);
+
+console.log("✓ WLAN event multi-adapter isolation tests passed!");
+
 console.log("\n==================================================");
 console.log("ALL VERIFICATION TESTS PASSED SUCCESSFULLY! 🎉");
 console.log("==================================================");

@@ -313,7 +313,15 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
     const isConnected = /State\s*:\s*connected/i.test(activeBlock);
     const ifaceMatch = activeBlock.match(/^\s*Name\s*:\s*(.+)$/m);
     const ifaceName = ifaceMatch ? ifaceMatch[1].trim() : "Wi-Fi";
+    const guidMatch = activeBlock.match(/GUID\s*:\s*([a-f0-9-]+)/i);
+    const currentGuid = guidMatch
+      ? (guidMatch[1].startsWith("{")
+          ? guidMatch[1]
+          : `{${guidMatch[1]}}`
+        ).toLowerCase()
+      : undefined;
     const ssidMatch = activeBlock.match(/SSID\s*:\s*(.+)/i);
+    const currentSsid = ssidMatch ? ssidMatch[1].trim() : undefined;
     const bssidMatch = activeBlock.match(/AP BSSID\s*:\s*(.+)/i);
     const signalMatch = activeBlock.match(/Signal\s*:\s*(\d+)%/i);
     const bandMatch = activeBlock.match(/Band\s*:\s*(.+)/i);
@@ -359,6 +367,10 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       }
 
       // 2. Gateway, session data, and connection event in parallel via fast native commands (~100ms total)
+      const eventQuery = currentGuid
+        ? `*[System[(EventID=8001 or EventID=8003)] and EventData[Data[@Name='InterfaceGuid']='${currentGuid}']]`
+        : `*[System[(EventID=8001 or EventID=8003)]]`;
+
       const [ipv4ConfigRes, ipv4SubRes, ipv6SubRes, wlanEventRes] =
         await Promise.allSettled([
           runNetsh(["interface", "ipv4", "show", "config", ifaceName]),
@@ -369,8 +381,8 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
             [
               "qe",
               "Microsoft-Windows-WLAN-AutoConfig/Operational",
-              "/c:1",
-              "/q:*[System[(EventID=8001 or EventID=8003)]]",
+              "/c:5",
+              `/q:${eventQuery}`,
               "/rd:true",
               "/f:xml",
             ],
@@ -380,19 +392,60 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
 
       let connectionKey: string | undefined;
       if (wlanEventRes.status === "fulfilled" && wlanEventRes.value?.stdout) {
-        const xml = wlanEventRes.value.stdout;
-        const evId = xml.match(/<EventID>(\d+)<\/EventID>/)?.[1];
-        if (evId === "8003") {
-          clearSessionBaseline();
-        } else if (evId === "8001") {
-          const connId = xml.match(
-            /<Data Name=['"]ConnectionId['"]>([^<]+)<\/Data>/,
+        const rawXml = wlanEventRes.value.stdout;
+        const eventBlocks = rawXml.match(/<Event[\s\S]*?<\/Event>/gi) || [
+          rawXml,
+        ];
+
+        for (const evXml of eventBlocks) {
+          const evId = evXml.match(/<EventID>(\d+)<\/EventID>/)?.[1];
+          const evGuid = evXml.match(
+            /<Data Name=['"]InterfaceGuid['"]>([^<]+)<\/Data>/i,
           )?.[1];
-          const recId = xml.match(/<EventRecordID>(\d+)<\/EventRecordID>/)?.[1];
-          const time = xml.match(
-            /<TimeCreated SystemTime=['"]([^'"]+)['"]/,
+          const evSsid = evXml.match(
+            /<Data Name=['"]SSID['"]>([^<]+)<\/Data>/i,
           )?.[1];
-          connectionKey = connId ? `${connId}_${recId || time}` : recId || time;
+
+          // Ensure the event belongs to this adapter's GUID (if known)
+          const cleanEvGuid = evGuid
+            ? (evGuid.startsWith("{") ? evGuid : `{${evGuid}}`)
+                .trim()
+                .toLowerCase()
+            : undefined;
+          if (currentGuid && cleanEvGuid && cleanEvGuid !== currentGuid) {
+            continue;
+          }
+
+          // Ensure the event matches the active SSID (if known)
+          const cleanEvSsid = evSsid
+            ? unescapeXml(evSsid).trim().toLowerCase()
+            : undefined;
+          if (
+            currentSsid &&
+            cleanEvSsid &&
+            cleanEvSsid !== currentSsid.toLowerCase()
+          ) {
+            continue;
+          }
+
+          // Found the latest matching event for this specific adapter and network
+          if (evId === "8003") {
+            clearSessionBaseline(currentSsid);
+          } else if (evId === "8001") {
+            const connId = evXml.match(
+              /<Data Name=['"]ConnectionId['"]>([^<]+)<\/Data>/i,
+            )?.[1];
+            const recId = evXml.match(
+              /<EventRecordID>(\d+)<\/EventRecordID>/i,
+            )?.[1];
+            const time = evXml.match(
+              /<TimeCreated SystemTime=['"]([^'"]+)['"]/i,
+            )?.[1];
+            connectionKey = connId
+              ? `${connId}_${recId || time}`
+              : recId || time;
+          }
+          break;
         }
       }
 
@@ -489,7 +542,6 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
     };
   } catch {
-    clearSessionBaseline();
     return { isOn: false, isConnected: false };
   }
 }
@@ -500,10 +552,11 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
 export async function toggleWindowsWifi(
   targetState?: boolean,
 ): Promise<boolean> {
-  if (targetState === false) {
+  const result = await toggleWindowsRadio(1, targetState);
+  if (!result) {
     clearSessionBaseline();
   }
-  return toggleWindowsRadio(1, targetState);
+  return result;
 }
 
 /**
@@ -705,6 +758,15 @@ function escapeXml(unsafe: string): string {
   });
 }
 
+function unescapeXml(str: string): string {
+  return str
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 /**
  * Connects to a Wi-Fi network by SSID. If a password is provided for an unsaved network,
  * creates a temporary XML profile.
@@ -761,18 +823,18 @@ export async function connectWindowsWifi(
     }
   }
 
-  clearSessionBaseline();
-  invalidateWindowsWifiCache();
   await runNetsh(["wlan", "connect", `name=${ssid}`]);
+  clearSessionBaseline(ssid);
+  invalidateWindowsWifiCache();
 }
 
 /**
  * Disconnects the active Wi-Fi connection.
  */
 export async function disconnectWindowsWifi(): Promise<void> {
+  await runNetsh(["wlan", "disconnect"]);
   clearSessionBaseline();
   invalidateWindowsWifiCache();
-  await runNetsh(["wlan", "disconnect"]);
 }
 
 /**

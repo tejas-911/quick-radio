@@ -196,7 +196,6 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
       internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
     };
   } catch {
-    clearSessionBaseline();
     return { isOn: false, isConnected: false };
   }
 }
@@ -205,14 +204,14 @@ export async function toggleMacWifi(targetState?: boolean): Promise<boolean> {
   const device = await getMacWifiDevice();
   const current = await getMacWifiStatus();
   const nextState = targetState !== undefined ? targetState : !current.isOn;
-  if (!nextState) {
-    clearSessionBaseline();
-  }
   await runExecFile("networksetup", [
     "-setairportpower",
     device,
     nextState ? "on" : "off",
   ]);
+  if (!nextState) {
+    clearSessionBaseline();
+  }
   return nextState;
 }
 
@@ -269,17 +268,16 @@ export async function connectMacWifi(
   ssid: string,
   password?: string,
 ): Promise<void> {
-  clearSessionBaseline();
   const device = await getMacWifiDevice();
   const args = ["-setairportnetwork", device, ssid];
   if (password) {
     args.push(password);
   }
   await runExecFile("networksetup", args);
+  clearSessionBaseline(ssid);
 }
 
 export async function disconnectMacWifi(): Promise<void> {
-  clearSessionBaseline();
   const device = await getMacWifiDevice();
 
   // 1. Try real disassociation via CoreWLAN (JXA)
@@ -316,6 +314,8 @@ export async function disconnectMacWifi(): Promise<void> {
       throw new Error("Failed to disassociate from Wi-Fi network.");
     }
   }
+
+  clearSessionBaseline();
 }
 
 let cachedBlueutilPath: string | null | undefined = undefined;

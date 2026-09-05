@@ -11,7 +11,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { WifiDetail } from "./components/WifiDetail";
 import { ConnectPasswordForm } from "./components/ConnectPasswordForm";
 import {
-  clearSessionBaseline,
   connectWifi,
   disconnectWifi,
   getInternetSpeed,
@@ -219,7 +218,6 @@ export default function WifiCommand() {
   async function handleToggleWifi() {
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
-    clearSessionBaseline();
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: `${status.isOn ? "Turning Wi-Fi Off..." : "Turning Wi-Fi On..."}`,
@@ -241,6 +239,7 @@ export default function WifiCommand() {
       toast.style = Toast.Style.Failure;
       toast.title = "Failed to toggle Wi-Fi";
       toast.message = error instanceof Error ? error.message : String(error);
+      refresh();
     } finally {
       isActionInProgressRef.current = false;
     }
@@ -249,7 +248,6 @@ export default function WifiCommand() {
   async function handleConnect(network: WifiNetwork) {
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
-    clearSessionBaseline(network.ssid);
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: `Connecting to "${network.ssid}"...`,
@@ -265,6 +263,7 @@ export default function WifiCommand() {
       toast.style = Toast.Style.Failure;
       toast.title = "Failed to connect";
       toast.message = error instanceof Error ? error.message : String(error);
+      refresh();
     } finally {
       isActionInProgressRef.current = false;
     }
@@ -273,12 +272,6 @@ export default function WifiCommand() {
   async function handleDisconnect() {
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
-    clearSessionBaseline();
-    setStatus((prev) => ({
-      ...prev,
-      isConnected: false,
-      sessionData: undefined,
-    }));
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: "Disconnecting from Wi-Fi...",
@@ -286,6 +279,11 @@ export default function WifiCommand() {
     try {
       await disconnectWifi();
       if (!isMountedRef.current) return;
+      setStatus((prev) => ({
+        ...prev,
+        isConnected: false,
+        sessionData: undefined,
+      }));
       toast.style = Toast.Style.Success;
       toast.title = "Disconnected from Wi-Fi";
       scheduleTimeout(() => refresh(), 1500);
@@ -294,6 +292,7 @@ export default function WifiCommand() {
       toast.style = Toast.Style.Failure;
       toast.title = "Failed to disconnect";
       toast.message = error instanceof Error ? error.message : String(error);
+      refresh();
     } finally {
       isActionInProgressRef.current = false;
     }
