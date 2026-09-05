@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { WifiDetail } from "./components/WifiDetail";
 import { ConnectPasswordForm } from "./components/ConnectPasswordForm";
 import {
+  clearSessionBaseline,
   connectWifi,
   disconnectWifi,
   getInternetSpeed,
@@ -218,6 +219,7 @@ export default function WifiCommand() {
   async function handleToggleWifi() {
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
+    clearSessionBaseline();
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: `${status.isOn ? "Turning Wi-Fi Off..." : "Turning Wi-Fi On..."}`,
@@ -229,6 +231,7 @@ export default function WifiCommand() {
         ...prev,
         isOn: newState,
         isConnected: newState ? prev.isConnected : false,
+        sessionData: newState ? prev.sessionData : undefined,
       }));
       toast.style = Toast.Style.Success;
       toast.title = `Wi-Fi turned ${newState ? "ON" : "OFF"}`;
@@ -246,6 +249,7 @@ export default function WifiCommand() {
   async function handleConnect(network: WifiNetwork) {
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
+    clearSessionBaseline(network.ssid);
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: `Connecting to "${network.ssid}"...`,
@@ -269,9 +273,11 @@ export default function WifiCommand() {
   async function handleDisconnect() {
     actionSeqRef.current++;
     isActionInProgressRef.current = true;
+    clearSessionBaseline();
     setStatus((prev) => ({
       ...prev,
       isConnected: false,
+      sessionData: undefined,
     }));
     const toast = await showToast({
       style: Toast.Style.Animated,

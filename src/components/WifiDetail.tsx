@@ -1,6 +1,7 @@
 import { Color, Icon, List } from "@raycast/api";
 import QRCode from "qrcode";
 import { WifiNetwork, WifiStatus } from "../services/types";
+import { formatBytes } from "../services/wifiService";
 
 interface WifiDetailProps {
   network: WifiNetwork;
@@ -29,7 +30,15 @@ export function WifiDetail({
     } else if (status.isTestingSpeed) {
       markdown += `**Internet Speed**: ⏳ Measuring...  \n`;
     }
-    // Note: Session Data usage tracking reserved as a future feature
+    if (status.sessionData) {
+      const downSession = formatBytes(status.sessionData.downloadedBytes);
+      const upSession = formatBytes(status.sessionData.uploadedBytes);
+      markdown += `**Session Data**: ⬇️ ${downSession} / ⬆️ ${upSession}  \n`;
+
+      const downTotal = formatBytes(status.sessionData.totalBytesIn);
+      const upTotal = formatBytes(status.sessionData.totalBytesOut);
+      markdown += `**Total Interface Data**: ⬇️ ${downTotal} / ⬆️ ${upTotal}  \n`;
+    }
     if (status.ipAddress) {
       markdown += `**IP Address**: \`${status.ipAddress}\`  \n`;
     }
@@ -123,7 +132,26 @@ export function WifiDetail({
               }
             />
           )}
-          {/* Note: Session Data usage tracking reserved as a future feature */}
+          {isCurrent && status.sessionData && (
+            <>
+              <List.Item.Detail.Metadata.Label
+                title="Session Downloaded"
+                text={formatBytes(status.sessionData.downloadedBytes)}
+              />
+              <List.Item.Detail.Metadata.Label
+                title="Session Uploaded"
+                text={formatBytes(status.sessionData.uploadedBytes)}
+              />
+              <List.Item.Detail.Metadata.Label
+                title="Total Interface Downloaded"
+                text={formatBytes(status.sessionData.totalBytesIn)}
+              />
+              <List.Item.Detail.Metadata.Label
+                title="Total Interface Uploaded"
+                text={formatBytes(status.sessionData.totalBytesOut)}
+              />
+            </>
+          )}
           <List.Item.Detail.Metadata.Separator />
           <List.Item.Detail.Metadata.TagList title="Connection State">
             <List.Item.Detail.Metadata.TagList.Item

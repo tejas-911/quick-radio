@@ -128,8 +128,16 @@ const sessionCache = new Cache({ namespace: "wifi-session-usage" });
 const LAST_SSID_KEY = "__active_ssid__";
 let activeBaseline: StoredBaseline | undefined;
 
-export function clearSessionBaseline(): void {
+export function clearSessionBaseline(ssid?: string): void {
   try {
+    if (ssid) {
+      sessionCache.remove(ssid);
+    }
+    const lastActiveSsid = sessionCache.get(LAST_SSID_KEY);
+    if (lastActiveSsid) {
+      sessionCache.remove(lastActiveSsid);
+    }
+    sessionCache.remove(LAST_SSID_KEY);
     sessionCache.clear();
   } catch {
     try {
