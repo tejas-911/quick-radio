@@ -1,43 +1,56 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { register } from "node:module";
 import { promisify } from "node:util";
+
+register("./ts-loader.mjs", import.meta.url);
 
 const execFileAsync = promisify(execFile);
 
-// 1. Test formatBytes implementation
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 B";
-  }
+// Dynamically import real exported functions from the codebase
+const {
+  formatBytes,
+  formatGigaBytes,
+  calculateSessionUsage,
+} = await import("../src/services/speedService.ts");
+const { parseSubinterfaceBytes } = await import(
+  "../src/services/platform/windows.ts"
+);
+const { parseNetstatBytes } = await import(
+  "../src/services/platform/macos.ts"
+);
 
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let unitIndex = 0;
-  let val = bytes;
+console.log("==================================================");
+console.log("RUNNING COMPREHENSIVE SESSION DATA VERIFICATION");
+console.log("==================================================");
 
-  while (val >= 1024 && unitIndex < units.length - 1) {
-    val /= 1024;
-    unitIndex++;
-  }
+// ---------------------------------------------------------------
+// 1. Test formatBytes Implementation
+// ---------------------------------------------------------------
+console.log("\n--- 1. Testing formatBytes ---");
 
-  if (unitIndex === 0) {
-    return `${Math.round(val)} B`;
-  }
+// Non-finite and zero/negative cases
+assert.equal(formatBytes(0), "0 B", "0 should format to '0 B'");
+assert.equal(formatBytes(-0), "0 B", "-0 should format to '0 B'");
+assert.equal(formatBytes(-100), "0 B", "Negative bytes should format to '0 B'");
+assert.equal(formatBytes(NaN), "0 B", "NaN should format to '0 B'");
+assert.equal(formatBytes(Infinity), "0 B", "Infinity should format to '0 B'");
+assert.equal(formatBytes(-Infinity), "0 B", "-Infinity should format to '0 B'");
 
-  if (parseFloat(val.toFixed(2)) >= 1024 && unitIndex < units.length - 1) {
-    val /= 1024;
-    unitIndex++;
-  }
-
-  return `${val.toFixed(2)} ${units[unitIndex]}`;
-}
-
-console.log("--- Testing formatBytes ---");
-assert.equal(formatBytes(0), "0 B");
-assert.equal(formatBytes(-100), "0 B");
-assert.equal(formatBytes(NaN), "0 B");
-assert.equal(formatBytes(Infinity), "0 B");
+// Small bytes
+assert.equal(formatBytes(1), "1 B");
 assert.equal(formatBytes(500), "500 B");
 assert.equal(formatBytes(1023), "1023 B");
+
+// Boundary rounding: 1023.4 vs 1023.6 (Math.round bumps to 1024 -> 1.00 KB)
+assert.equal(formatBytes(1023.4), "1023 B");
+assert.equal(
+  formatBytes(1023.6),
+  "1.00 KB",
+  "1023.6 B rounds to 1024 B, which must adaptively bump to '1.00 KB'",
+);
+
+// Standard intermediate intervals
 assert.equal(formatBytes(1024), "1.00 KB");
 assert.equal(formatBytes(1536), "1.50 KB");
 assert.equal(formatBytes(1024 * 1024), "1.00 MB");
@@ -45,160 +58,109 @@ assert.equal(formatBytes(2.5 * 1024 * 1024), "2.50 MB");
 assert.equal(formatBytes(1024 * 1024 * 1024), "1.00 GB");
 assert.equal(formatBytes(5.75 * 1024 * 1024 * 1024), "5.75 GB");
 assert.equal(formatBytes(1024 * 1024 * 1024 * 1024), "1.00 TB");
-assert.equal(formatBytes(1023.999 * 1024), "1.00 MB"); // Bump boundary
+assert.equal(formatBytes(2.5 * 1024 * 1024 * 1024 * 1024), "2.50 TB");
+
+// Unit boundary bump handling (1023.999 * 1024 -> 1.00 MB)
+assert.equal(formatBytes(1023.999 * 1024), "1.00 MB");
+assert.equal(formatBytes(1023.999 * 1024 * 1024), "1.00 GB");
+assert.equal(formatBytes(1023.999 * 1024 * 1024 * 1024), "1.00 TB");
+
+// formatGigaBytes check
+assert.equal(formatGigaBytes(0), "0.00 GB");
+assert.equal(formatGigaBytes(1024 * 1024 * 1024), "1.00 GB");
+assert.equal(formatGigaBytes(5 * 1024 * 1024 * 1024), "5.00 GB");
+
 console.log("✓ formatBytes tests passed!");
 
-// 2. Test calculateSessionUsage with simulated Cache
-class MockCache {
-  constructor() {
-    this.store = new Map();
-  }
-  get(key) {
-    return this.store.get(key);
-  }
-  set(key, val) {
-    this.store.set(key, String(val));
-  }
-  remove(key) {
-    return this.store.delete(key);
-  }
-  clear() {
-    this.store.clear();
-  }
-}
+// ---------------------------------------------------------------
+// 2. Test calculateSessionUsage with Cache Persistence
+// ---------------------------------------------------------------
+console.log("\n--- 2. Testing calculateSessionUsage Cache behavior ---");
 
-function createSessionCalculator(cache) {
-  const LAST_SSID_KEY = "__active_ssid__";
+// Test A: Initial connection with 0 bytes (e.g. freshly enabled Wi-Fi adapter)
+const resZero = calculateSessionUsage("FreshWiFi", 0, 0);
+assert.equal(resZero.downloadedBytes, 0, "Initial delta should be 0");
+assert.equal(resZero.uploadedBytes, 0, "Initial delta should be 0");
+assert.equal(resZero.totalBytesIn, 0);
+assert.equal(resZero.totalBytesOut, 0);
 
-  return function calculateSessionUsage(ssid, currentBytesIn, currentBytesOut) {
-    if (!ssid || (currentBytesIn === 0 && currentBytesOut === 0)) {
-      return {
-        downloadedBytes: 0,
-        uploadedBytes: 0,
-        totalBytesIn: currentBytesIn,
-        totalBytesOut: currentBytesOut,
-      };
-    }
+// Test A2: Data arrives on FreshWiFi after baseline was initialized at 0
+const resZeroPlus = calculateSessionUsage("FreshWiFi", 5000, 2000);
+assert.equal(
+  resZeroPlus.downloadedBytes,
+  5000,
+  "Data transferred from 0 baseline must be captured!",
+);
+assert.equal(
+  resZeroPlus.uploadedBytes,
+  2000,
+  "Data transferred from 0 baseline must be captured!",
+);
 
-    const now = Date.now();
-    let baseline;
-
-    const lastActiveSsid = cache.get(LAST_SSID_KEY);
-    const cachedStr = cache.get(ssid);
-    if (cachedStr) {
-      try {
-        baseline = JSON.parse(cachedStr);
-      } catch {
-        baseline = undefined;
-      }
-    }
-
-    const isSsidSwitched =
-      lastActiveSsid !== undefined && lastActiveSsid !== ssid;
-    const countersWrapped =
-      baseline !== undefined &&
-      (currentBytesIn < baseline.baselineIn ||
-        currentBytesOut < baseline.baselineOut);
-
-    if (!baseline || isSsidSwitched || countersWrapped) {
-      baseline = {
-        ssid,
-        baselineIn: currentBytesIn,
-        baselineOut: currentBytesOut,
-        firstObservedTime: now,
-        lastUpdatedTime: now,
-      };
-      cache.set(ssid, JSON.stringify(baseline));
-    } else {
-      baseline.lastUpdatedTime = now;
-      cache.set(ssid, JSON.stringify(baseline));
-    }
-
-    cache.set(LAST_SSID_KEY, ssid);
-
-    const downloadedBytes = Math.max(0, currentBytesIn - baseline.baselineIn);
-    const uploadedBytes = Math.max(0, currentBytesOut - baseline.baselineOut);
-
-    return {
-      downloadedBytes,
-      uploadedBytes,
-      totalBytesIn: currentBytesIn,
-      totalBytesOut: currentBytesOut,
-    };
-  };
-}
-
-console.log("--- Testing calculateSessionUsage Cache behavior ---");
-const sharedCache = new MockCache();
-
-// Launch 1: First connection to MyHomeNet
-const calc1 = createSessionCalculator(sharedCache);
-const res1 = calc1("MyHomeNet", 10_000_000, 2_000_000);
+// Test B: First launch on MyHomeNet with non-zero hardware counters
+const res1 = calculateSessionUsage("MyHomeNet", 10_000_000, 2_000_000);
 assert.equal(res1.downloadedBytes, 0, "First launch delta should be 0");
 assert.equal(res1.uploadedBytes, 0, "First launch delta should be 0");
 assert.equal(res1.totalBytesIn, 10_000_000);
 assert.equal(res1.totalBytesOut, 2_000_000);
 
-// Launch 2 (Raycast closed and reopened 5 mins later, same SSID, data transferred)
-const calc2 = createSessionCalculator(sharedCache);
-const res2 = calc2("MyHomeNet", 25_000_000, 5_000_000);
-assert.equal(res2.downloadedBytes, 15_000_000, "Delta must be preserved across launches!");
-assert.equal(res2.uploadedBytes, 3_000_000, "Delta must be preserved across launches!");
+// Test C: Subsequent query on MyHomeNet after data transfer (simulating Raycast reopen)
+const res2 = calculateSessionUsage("MyHomeNet", 25_000_000, 5_000_000);
+assert.equal(
+  res2.downloadedBytes,
+  15_000_000,
+  "Delta must be preserved across launches!",
+);
+assert.equal(
+  res2.uploadedBytes,
+  3_000_000,
+  "Delta must be preserved across launches!",
+);
 assert.equal(res2.totalBytesIn, 25_000_000);
 assert.equal(res2.totalBytesOut, 5_000_000);
 
-// Launch 3: User switches to CoffeeShop
-const calc3 = createSessionCalculator(sharedCache);
-const res3 = calc3("CoffeeShop", 30_000_000, 6_000_000);
+// Test D: User switches to CoffeeShop (SSID switch resets delta)
+const res3 = calculateSessionUsage("CoffeeShop", 30_000_000, 6_000_000);
 assert.equal(res3.downloadedBytes, 0, "Delta should reset when switching to new SSID");
 assert.equal(res3.uploadedBytes, 0, "Delta should reset when switching to new SSID");
 assert.equal(res3.totalBytesIn, 30_000_000);
 assert.equal(res3.totalBytesOut, 6_000_000);
 
-// Launch 4: CoffeeShop accumulates data
-const calc4 = createSessionCalculator(sharedCache);
-const res4 = calc4("CoffeeShop", 35_000_000, 7_000_000);
+// Test E: CoffeeShop accumulates data
+const res4 = calculateSessionUsage("CoffeeShop", 35_000_000, 7_000_000);
 assert.equal(res4.downloadedBytes, 5_000_000);
 assert.equal(res4.uploadedBytes, 1_000_000);
 
-// Launch 5: Counter wrap / reboot scenario
-const calc5 = createSessionCalculator(sharedCache);
-const res5 = calc5("CoffeeShop", 500_000, 100_000); // counters dropped below baseline
-assert.equal(res5.downloadedBytes, 0, "Delta should reset on counter wrap");
-assert.equal(res5.uploadedBytes, 0, "Delta should reset on counter wrap");
-assert.equal(res5.totalBytesIn, 500_000);
-assert.equal(res5.totalBytesOut, 100_000);
+// Test F: User switches back to MyHomeNet (starts new session on MyHomeNet)
+const resBack = calculateSessionUsage("MyHomeNet", 40_000_000, 8_000_000);
+assert.equal(
+  resBack.downloadedBytes,
+  0,
+  "Switching back to previous SSID should establish fresh session baseline",
+);
+assert.equal(resBack.uploadedBytes, 0);
+
+// Test G: Counter wrap / reboot scenario (counters drop below baseline)
+const resWrap = calculateSessionUsage("MyHomeNet", 500_000, 100_000);
+assert.equal(resWrap.downloadedBytes, 0, "Delta should reset on counter wrap/reboot");
+assert.equal(resWrap.uploadedBytes, 0, "Delta should reset on counter wrap/reboot");
+assert.equal(resWrap.totalBytesIn, 500_000);
+assert.equal(resWrap.totalBytesOut, 100_000);
+
+// Test H: Negative / NaN inputs are safely sanitized
+const resSanitized = calculateSessionUsage("MyHomeNet", -500, NaN);
+assert.equal(resSanitized.totalBytesIn, 0);
+assert.equal(resSanitized.totalBytesOut, 0);
+assert.equal(resSanitized.downloadedBytes, 0);
+assert.equal(resSanitized.uploadedBytes, 0);
+
 console.log("✓ calculateSessionUsage Cache tests passed!");
 
-// 3. Test Windows netsh parser
-function parseSubinterfaceBytes(output, ifaceName) {
-  try {
-    const lines = output.split("\n").map((l) => l.trim());
-    const targetIfaceLower = ifaceName.toLowerCase();
-    for (const line of lines) {
-      const parts = line.split(/\s+/);
-      if (parts.length >= 5) {
-        const lineIface = parts.slice(4).join(" ").toLowerCase();
-        if (
-          lineIface === targetIfaceLower ||
-          lineIface.includes(targetIfaceLower) ||
-          (targetIfaceLower.includes("wi-fi") && lineIface.includes("wi-fi"))
-        ) {
-          const bytesIn = parseInt(parts[2], 10);
-          const bytesOut = parseInt(parts[3], 10);
-          if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
-            return { bytesIn, bytesOut };
-          }
-        }
-      }
-    }
-  } catch {
-    // Return undefined on parsing failure
-  }
-  return undefined;
-}
+// ---------------------------------------------------------------
+// 3. Test Windows Netsh Subinterfaces & Multi-Interface Parsing
+// ---------------------------------------------------------------
+console.log("\n--- 3. Testing Windows netsh parser ---");
 
-console.log("--- Testing Windows netsh parser ---");
 const sampleIpv4 = `
        MTU  MediaSenseState      Bytes In     Bytes Out  Interface
 ----------  ---------------  ------------  ------------  -------------
@@ -224,66 +186,73 @@ const totalIn = v4Counters.bytesIn + v6Counters.bytesIn;
 const totalOut = v4Counters.bytesOut + v6Counters.bytesOut;
 assert.equal(totalIn, 4309745551);
 assert.equal(totalOut, 4402346527);
+
+// Test Virtual / Direct Adapter Precedence:
+// Ensure "Wi-Fi Direct Virtual Adapter" listed BEFORE "Wi-Fi" does NOT intercept "Wi-Fi" query!
+const sampleWithVirtualFirst = `
+       MTU  MediaSenseState      Bytes In     Bytes Out  Interface
+----------  ---------------  ------------  ------------  -------------
+      1500                5             0             0  Wi-Fi Direct Virtual Adapter
+      1500                1    5555555555    6666666666  Wi-Fi
+`;
+const exactWifiCounters = parseSubinterfaceBytes(sampleWithVirtualFirst, "Wi-Fi");
+assert.deepEqual(
+  exactWifiCounters,
+  { bytesIn: 5555555555, bytesOut: 6666666666 },
+  "Wi-Fi query must prioritize exact match over preceding Wi-Fi Direct Virtual Adapter!",
+);
+
+// Test Multi-Interface WLAN Segmentation:
+// When netsh wlan show interfaces lists an inactive interface first,
+// our segmentation logic picks the connected block.
+const multiInterfaceWlanOutput = `
+There are 2 interfaces on the system:
+
+    Name                   : Local Area Connection* 1
+    Description            : Microsoft Wi-Fi Direct Virtual Adapter
+    GUID                   : 11111111-2222-3333-4444-555555555555
+    Physical address       : aa:bb:cc:dd:ee:01
+    State                  : disconnected
+
+    Name                   : Wi-Fi
+    Description            : Intel(R) Wi-Fi 6 AX200 160MHz
+    GUID                   : 66666666-7777-8888-9999-000000000000
+    Physical address       : aa:bb:cc:dd:ee:02
+    State                  : connected
+    SSID                   : OfficeSuperNet
+    Signal                 : 95%
+`;
+
+const interfaceBlocks = multiInterfaceWlanOutput
+  .split(/(?=(?:^|\r?\n)\s*Name\s*:)/i)
+  .filter((b) => /Name\s*:/i.test(b));
+
+const activeBlock =
+  interfaceBlocks.find((b) => /State\s*:\s*connected/i.test(b)) ||
+  interfaceBlocks[0];
+
+const ifaceMatch = activeBlock.match(/^\s*Name\s*:\s*(.+)$/m);
+const activeIfaceName = ifaceMatch ? ifaceMatch[1].trim() : "Wi-Fi";
+const ssidMatch = activeBlock.match(/SSID\s*:\s*(.+)/i);
+
+assert.equal(
+  activeIfaceName,
+  "Wi-Fi",
+  "Active block segmentation must correctly select 'Wi-Fi' instead of 'Local Area Connection* 1'",
+);
+assert.equal(
+  ssidMatch[1].trim(),
+  "OfficeSuperNet",
+  "Active block segmentation must correctly select 'OfficeSuperNet'",
+);
+
 console.log("✓ Windows netsh parser tests passed!");
 
-// 4. Test macOS netstat parser
-function parseNetstatBytes(output, device) {
-  try {
-    const lines = output
-      .trim()
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    if (lines.length < 2) return undefined;
+// ---------------------------------------------------------------
+// 4. Test macOS Netstat Parser
+// ---------------------------------------------------------------
+console.log("\n--- 4. Testing macOS netstat parser ---");
 
-    const header = lines[0].split(/\s+/);
-    let ibytesIdx = header.findIndex((h) => /^ibytes$/i.test(h));
-    let obytesIdx = header.findIndex((h) => /^obytes$/i.test(h));
-
-    if (ibytesIdx === -1 || obytesIdx === -1) {
-      ibytesIdx = 6;
-      obytesIdx = 9;
-    }
-
-    const deviceLower = device.toLowerCase();
-
-    for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(/\s+/);
-      if (parts.length > Math.max(ibytesIdx, obytesIdx)) {
-        const lineDev = parts[0].toLowerCase();
-        if (lineDev === deviceLower || lineDev.startsWith(deviceLower)) {
-          if (parts.some((p) => p.includes("<Link"))) {
-            const bytesIn = parseInt(parts[ibytesIdx], 10);
-            const bytesOut = parseInt(parts[obytesIdx], 10);
-            if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
-              return { bytesIn, bytesOut };
-            }
-          }
-        }
-      }
-    }
-
-    for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(/\s+/);
-      if (parts.length > Math.max(ibytesIdx, obytesIdx)) {
-        const lineDev = parts[0].toLowerCase();
-        if (lineDev === deviceLower || lineDev.startsWith(deviceLower)) {
-          const bytesIn = parseInt(parts[ibytesIdx], 10);
-          const bytesOut = parseInt(parts[obytesIdx], 10);
-          if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
-            return { bytesIn, bytesOut };
-          }
-        }
-      }
-    }
-  } catch {
-    // Netstat parse error fallback
-  }
-
-  return undefined;
-}
-
-console.log("--- Testing macOS netstat parser ---");
 const sampleMacNetstat = `
 Name  Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
 en0   1500  <Link#14>     38:f9:d3:a1:b2:c3 234123     0  987654321   123456     0   12345678     0
@@ -293,22 +262,70 @@ en0   1500  192.168.1     192.168.1.50      234123     -  987654321   123456    
 
 const macCounters = parseNetstatBytes(sampleMacNetstat, "en0");
 assert.deepEqual(macCounters, { bytesIn: 987654321, bytesOut: 12345678 });
+
+// Test Prefix Collision Prevention:
+// If en10 appears before en1, querying en1 must NOT match en10!
+const sampleMacPrefixCollision = `
+Name  Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+en10  1500  <Link#20>     00:11:22:33:44:55    100     0      11111       50     0      22222     0
+en1   1500  <Link#15>     66:77:88:99:aa:bb  50000     0  999999999    25000     0   88888888     0
+`;
+const en1Counters = parseNetstatBytes(sampleMacPrefixCollision, "en1");
+assert.deepEqual(
+  en1Counters,
+  { bytesIn: 999999999, bytesOut: 88888888 },
+  "Querying 'en1' must not mistakenly match 'en10' even when en10 precedes it!",
+);
+
+// Test Inactive Device Marker (en0*):
+const sampleMacDown = `
+Name  Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+en0*  1500  <Link#14>     38:f9:d3:a1:b2:c3  10000     0   50000000     5000     0    5000000     0
+`;
+const en0DownCounters = parseNetstatBytes(sampleMacDown, "en0");
+assert.deepEqual(
+  en0DownCounters,
+  { bytesIn: 50000000, bytesOut: 5000000 },
+  "Device name with trailing asterisk (en0*) must be parsed correctly",
+);
+
 console.log("✓ macOS netstat parser tests passed!");
 
-// 5. Test Live Windows Netsh execution (since we are on Windows)
+// ---------------------------------------------------------------
+// 5. Test Live Windows Netsh Execution (Host Environment)
+// ---------------------------------------------------------------
 if (process.platform === "win32") {
-  console.log("--- Testing Live Windows Netsh execution ---");
-  const { stdout: v4Out } = await execFileAsync("netsh", ["interface", "ipv4", "show", "subinterfaces"]);
-  const { stdout: v6Out } = await execFileAsync("netsh", ["interface", "ipv6", "show", "subinterfaces"]);
-  
+  console.log("\n--- 5. Testing Live Windows Netsh execution ---");
+  const { stdout: v4Out } = await execFileAsync("netsh", [
+    "interface",
+    "ipv4",
+    "show",
+    "subinterfaces",
+  ]);
+  const { stdout: v6Out } = await execFileAsync("netsh", [
+    "interface",
+    "ipv6",
+    "show",
+    "subinterfaces",
+  ]);
+
   const liveV4 = parseSubinterfaceBytes(v4Out, "Wi-Fi");
   const liveV6 = parseSubinterfaceBytes(v6Out, "Wi-Fi");
   console.log("Live Wi-Fi IPv4 counters:", liveV4);
   console.log("Live Wi-Fi IPv6 counters:", liveV6);
+
   assert(liveV4 !== undefined, "Live IPv4 Wi-Fi counters should be parsed");
-  assert(typeof liveV4.bytesIn === "number" && liveV4.bytesIn > 0, "Bytes In should be > 0");
-  assert(typeof liveV4.bytesOut === "number" && liveV4.bytesOut > 0, "Bytes Out should be > 0");
+  assert(
+    typeof liveV4.bytesIn === "number" && liveV4.bytesIn > 0,
+    "Bytes In should be > 0",
+  );
+  assert(
+    typeof liveV4.bytesOut === "number" && liveV4.bytesOut > 0,
+    "Bytes Out should be > 0",
+  );
   console.log("✓ Live Windows Netsh query verified successfully!");
 }
 
-console.log("\nALL VERIFICATION TESTS PASSED SUCCESSFULLY! 🎉");
+console.log("\n==================================================");
+console.log("ALL VERIFICATION TESTS PASSED SUCCESSFULLY! 🎉");
+console.log("==================================================");

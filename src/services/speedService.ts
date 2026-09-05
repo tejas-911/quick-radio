@@ -132,12 +132,21 @@ export function calculateSessionUsage(
   currentBytesIn: number,
   currentBytesOut: number,
 ): SessionDataUsage {
-  if (!ssid || (currentBytesIn === 0 && currentBytesOut === 0)) {
+  const safeBytesIn =
+    Number.isFinite(currentBytesIn) && currentBytesIn >= 0
+      ? Math.floor(currentBytesIn)
+      : 0;
+  const safeBytesOut =
+    Number.isFinite(currentBytesOut) && currentBytesOut >= 0
+      ? Math.floor(currentBytesOut)
+      : 0;
+
+  if (!ssid) {
     return {
       downloadedBytes: 0,
       uploadedBytes: 0,
-      totalBytesIn: currentBytesIn,
-      totalBytesOut: currentBytesOut,
+      totalBytesIn: safeBytesIn,
+      totalBytesOut: safeBytesOut,
     };
   }
 
@@ -159,14 +168,14 @@ export function calculateSessionUsage(
       lastActiveSsid !== undefined && lastActiveSsid !== ssid;
     const countersWrapped =
       baseline !== undefined &&
-      (currentBytesIn < baseline.baselineIn ||
-        currentBytesOut < baseline.baselineOut);
+      (safeBytesIn < baseline.baselineIn ||
+        safeBytesOut < baseline.baselineOut);
 
     if (!baseline || isSsidSwitched || countersWrapped) {
       baseline = {
         ssid,
-        baselineIn: currentBytesIn,
-        baselineOut: currentBytesOut,
+        baselineIn: safeBytesIn,
+        baselineOut: safeBytesOut,
         firstObservedTime: now,
         lastUpdatedTime: now,
       };
@@ -177,18 +186,19 @@ export function calculateSessionUsage(
     }
 
     sessionCache.set(LAST_SSID_KEY, ssid);
+    activeBaseline = baseline;
   } catch {
     // If Cache encounters an issue, fallback gracefully to in-memory state
     if (
       !activeBaseline ||
       activeBaseline.ssid !== ssid ||
-      currentBytesIn < activeBaseline.baselineIn ||
-      currentBytesOut < activeBaseline.baselineOut
+      safeBytesIn < activeBaseline.baselineIn ||
+      safeBytesOut < activeBaseline.baselineOut
     ) {
       activeBaseline = {
         ssid,
-        baselineIn: currentBytesIn,
-        baselineOut: currentBytesOut,
+        baselineIn: safeBytesIn,
+        baselineOut: safeBytesOut,
         firstObservedTime: now,
         lastUpdatedTime: now,
       };
@@ -198,14 +208,14 @@ export function calculateSessionUsage(
     baseline = activeBaseline;
   }
 
-  const downloadedBytes = Math.max(0, currentBytesIn - baseline.baselineIn);
-  const uploadedBytes = Math.max(0, currentBytesOut - baseline.baselineOut);
+  const downloadedBytes = Math.max(0, safeBytesIn - baseline.baselineIn);
+  const uploadedBytes = Math.max(0, safeBytesOut - baseline.baselineOut);
 
   return {
     downloadedBytes,
     uploadedBytes,
-    totalBytesIn: currentBytesIn,
-    totalBytesOut: currentBytesOut,
+    totalBytesIn: safeBytesIn,
+    totalBytesOut: safeBytesOut,
   };
 }
 
@@ -228,6 +238,9 @@ export function formatBytes(bytes: number): string {
   }
 
   if (unitIndex === 0) {
+    if (Math.round(val) >= 1024) {
+      return "1.00 KB";
+    }
     return `${Math.round(val)} B`;
   }
 

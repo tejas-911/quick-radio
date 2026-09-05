@@ -35,14 +35,9 @@ export function WifiDetail({
       const upSession = formatBytes(status.sessionData.uploadedBytes);
       markdown += `**Session Data**: ⬇️ ${downSession} / ⬆️ ${upSession}  \n`;
 
-      if (
-        status.sessionData.totalBytesIn > 0 ||
-        status.sessionData.totalBytesOut > 0
-      ) {
-        const downTotal = formatBytes(status.sessionData.totalBytesIn);
-        const upTotal = formatBytes(status.sessionData.totalBytesOut);
-        markdown += `**Total Interface Data**: ⬇️ ${downTotal} / ⬆️ ${upTotal}  \n`;
-      }
+      const downTotal = formatBytes(status.sessionData.totalBytesIn);
+      const upTotal = formatBytes(status.sessionData.totalBytesOut);
+      markdown += `**Total Interface Data**: ⬇️ ${downTotal} / ⬆️ ${upTotal}  \n`;
     }
     if (status.ipAddress) {
       markdown += `**IP Address**: \`${status.ipAddress}\`  \n`;
@@ -147,19 +142,14 @@ export function WifiDetail({
                 title="Session Uploaded"
                 text={formatBytes(status.sessionData.uploadedBytes)}
               />
-              {(status.sessionData.totalBytesIn > 0 ||
-                status.sessionData.totalBytesOut > 0) && (
-                <>
-                  <List.Item.Detail.Metadata.Label
-                    title="Total Interface Downloaded"
-                    text={formatBytes(status.sessionData.totalBytesIn)}
-                  />
-                  <List.Item.Detail.Metadata.Label
-                    title="Total Interface Uploaded"
-                    text={formatBytes(status.sessionData.totalBytesOut)}
-                  />
-                </>
-              )}
+              <List.Item.Detail.Metadata.Label
+                title="Total Interface Downloaded"
+                text={formatBytes(status.sessionData.totalBytesIn)}
+              />
+              <List.Item.Detail.Metadata.Label
+                title="Total Interface Uploaded"
+                text={formatBytes(status.sessionData.totalBytesOut)}
+              />
             </>
           )}
           <List.Item.Detail.Metadata.Separator />

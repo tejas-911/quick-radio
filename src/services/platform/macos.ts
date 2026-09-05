@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import {
+import type {
   WifiStatus,
   WifiNetwork,
   BluetoothStatus,
@@ -10,7 +10,7 @@ import {
 import {
   calculateSessionUsage,
   getCachedInternetSpeed,
-  SessionDataUsage,
+  type SessionDataUsage,
 } from "../speedService";
 
 const execFileAsync = promisify(execFile);
@@ -36,7 +36,7 @@ async function getMacWifiDevice(): Promise<string> {
   }
 }
 
-function parseNetstatBytes(
+export function parseNetstatBytes(
   output: string,
   device: string,
 ): { bytesIn: number; bytesOut: number } | undefined {
@@ -64,12 +64,15 @@ function parseNetstatBytes(
       const parts = lines[i].split(/\s+/);
       if (parts.length > Math.max(ibytesIdx, obytesIdx)) {
         const lineDev = parts[0].toLowerCase();
-        if (lineDev === deviceLower || lineDev.startsWith(deviceLower)) {
+        if (lineDev === deviceLower || lineDev === deviceLower + "*") {
           if (parts.some((p) => p.includes("<Link"))) {
             const bytesIn = parseInt(parts[ibytesIdx], 10);
             const bytesOut = parseInt(parts[obytesIdx], 10);
             if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
-              return { bytesIn, bytesOut };
+              return {
+                bytesIn: Math.max(0, bytesIn),
+                bytesOut: Math.max(0, bytesOut),
+              };
             }
           }
         }
@@ -81,11 +84,14 @@ function parseNetstatBytes(
       const parts = lines[i].split(/\s+/);
       if (parts.length > Math.max(ibytesIdx, obytesIdx)) {
         const lineDev = parts[0].toLowerCase();
-        if (lineDev === deviceLower || lineDev.startsWith(deviceLower)) {
+        if (lineDev === deviceLower || lineDev === deviceLower + "*") {
           const bytesIn = parseInt(parts[ibytesIdx], 10);
           const bytesOut = parseInt(parts[obytesIdx], 10);
           if (!isNaN(bytesIn) && !isNaN(bytesOut)) {
-            return { bytesIn, bytesOut };
+            return {
+              bytesIn: Math.max(0, bytesIn),
+              bytesOut: Math.max(0, bytesOut),
+            };
           }
         }
       }
@@ -114,13 +120,33 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
     try {
       infoOutput = await runExecFile(AIRPORT_PATH, ["-I"]);
     } catch {
-      // If airport utility is not accessible
+      // If airport utility is not accessible (e.g. deprecated/removed on Sonoma/Sequoia)
     }
 
     const ssidMatch = infoOutput.match(/\s+SSID:\s*(.+)/);
     const bssidMatch = infoOutput.match(/\s+BSSID:\s*(.+)/);
     const channelMatch = infoOutput.match(/\s+channel:\s*(\d+)/);
     const rssiMatch = infoOutput.match(/\s+agrCtlRSSI:\s*(-?\d+)/);
+
+    let ssid: string | undefined = ssidMatch ? ssidMatch[1].trim() : undefined;
+    if (!ssid) {
+      try {
+        const netsetupOutput = await runExecFile("networksetup", [
+          "-getairportnetwork",
+          device,
+        ]);
+        const m = netsetupOutput.match(/Current Wi-Fi Network:\s*(.+)/i);
+        if (
+          m &&
+          m[1].trim() &&
+          !m[1].toLowerCase().includes("not associated")
+        ) {
+          ssid = m[1].trim();
+        }
+      } catch {
+        // Fallback failed
+      }
+    }
 
     let signalPercent: number | undefined;
     if (rssiMatch) {
@@ -136,10 +162,10 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
       // IP query fallback
     }
 
-    const isConnected = Boolean(ssidMatch && ssidMatch[1].trim());
+    const isConnected = Boolean(ssid);
 
     let sessionData: SessionDataUsage | undefined;
-    if (isConnected && ssidMatch) {
+    if (isConnected && ssid) {
       try {
         const netstatOutput = await runExecFile("netstat", [
           "-b",
@@ -149,7 +175,7 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
         const counters = parseNetstatBytes(netstatOutput, device);
         if (counters) {
           sessionData = calculateSessionUsage(
-            ssidMatch[1].trim(),
+            ssid,
             counters.bytesIn,
             counters.bytesOut,
           );
@@ -162,7 +188,7 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
     return {
       isOn: true,
       isConnected,
-      ssid: ssidMatch ? ssidMatch[1].trim() : undefined,
+      ssid,
       bssid: bssidMatch ? bssidMatch[1].trim() : undefined,
       channel: channelMatch ? channelMatch[1].trim() : undefined,
       signalPercent,
