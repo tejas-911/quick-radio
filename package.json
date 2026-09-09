@@ -18,28 +18,24 @@
     {
       "name": "wifi",
       "title": "Manage Wi-Fi",
-      "subtitle": "Quick Radios",
       "description": "View status, connect to networks, and manage Wi-Fi.",
       "mode": "view"
     },
     {
       "name": "bluetooth",
       "title": "Manage Bluetooth",
-      "subtitle": "Quick Radios",
       "description": "View status, connect paired devices, and manage Bluetooth.",
       "mode": "view"
     },
     {
       "name": "toggle-wifi",
       "title": "Toggle Wi-Fi",
-      "subtitle": "Quick Radios",
       "description": "Instantly turn Wi-Fi on or off.",
       "mode": "no-view"
     },
     {
       "name": "toggle-bluetooth",
       "title": "Toggle Bluetooth",
-      "subtitle": "Quick Radios",
       "description": "Instantly turn Bluetooth on or off.",
       "mode": "no-view"
     }
