@@ -305,6 +305,13 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       .split(/(?=(?:^|\r?\n)\s*Name\s*:)/i)
       .filter((b) => /Name\s*:/i.test(b));
 
+    if (
+      interfaceBlocks.length === 0 ||
+      !interfaceBlocks.some((block) => /State\s*:/i.test(block))
+    ) {
+      throw new Error("Unable to parse Windows Wi-Fi interface state");
+    }
+
     const activeBlock =
       interfaceBlocks.find((b) => /State\s*:\s*connected/i.test(b)) ||
       interfaceBlocks[0] ||
@@ -539,10 +546,13 @@ export async function getWindowsWifiStatus(): Promise<WifiStatus> {
       ipAddress,
       gateway,
       sessionData,
-      internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
+      internetSpeed:
+        isConnected && currentSsid
+          ? getCachedInternetSpeed(currentSsid)
+          : undefined,
     };
-  } catch {
-    return { isOn: false, isConnected: false };
+  } catch (error) {
+    throw new Error("Failed to query Windows Wi-Fi status", { cause: error });
   }
 }
 
@@ -734,8 +744,10 @@ export async function getWindowsWifiNetworks(
 
       return b.signalPercent - a.signalPercent || a.ssid.localeCompare(b.ssid);
     });
-  } catch {
-    return [];
+  } catch (error) {
+    throw new Error("Failed to query Windows Wi-Fi networks", {
+      cause: error,
+    });
   }
 }
 
@@ -1036,10 +1048,20 @@ if ($bt) { $bt.State.ToString() } else { 'Unknown' }
 `;
   try {
     const result = await runPowerShell(script);
-    const isOn = result === "1" || result.toLowerCase() === "on";
-    return { isOn };
-  } catch {
-    return { isOn: false };
+    const normalized = result.toLowerCase();
+    if (
+      normalized !== "on" &&
+      normalized !== "off" &&
+      result !== "1" &&
+      result !== "0"
+    ) {
+      throw new Error(`Unexpected Bluetooth radio state: ${result || "empty"}`);
+    }
+    return { isOn: result === "1" || normalized === "on" };
+  } catch (error) {
+    throw new Error("Failed to query Windows Bluetooth status", {
+      cause: error,
+    });
   }
 }
 
@@ -1156,8 +1178,10 @@ $results | ConvertTo-Json -Depth 2
         isConnected: Boolean(item.IsConnected),
       }),
     );
-  } catch {
-    return [];
+  } catch (error) {
+    throw new Error("Failed to query Windows Bluetooth devices", {
+      cause: error,
+    });
   }
 }
 

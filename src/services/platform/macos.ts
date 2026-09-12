@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import { createHash } from "crypto";
 import { promisify } from "util";
 import type {
   WifiStatus,
@@ -17,12 +18,131 @@ import {
 const execFileAsync = promisify(execFile);
 
 async function runExecFile(file: string, args: string[] = []): Promise<string> {
-  const { stdout } = await execFileAsync(file, args);
+  const { stdout } = await execFileAsync(file, args, {
+    maxBuffer: 10 * 1024 * 1024,
+  });
   return stdout.trim();
 }
 
 const AIRPORT_PATH =
   "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport";
+
+let macConnectionIdentityCache:
+  | {
+      signature: string;
+      key: string;
+      lastCheckedAt: number;
+    }
+  | undefined;
+let pendingMacConnectionIdentity:
+  | {
+      signature: string;
+      promise: Promise<string>;
+    }
+  | undefined;
+
+export function parseMacWifiAssociationKey(
+  output: string,
+  ssid: string,
+  bssid?: string,
+  device?: string,
+): string | undefined {
+  const identifiers = [ssid, bssid, device]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+  const associationPattern =
+    /\bassociated\b|\bassociation succeeded\b|\bjoined\b|\broam(?:ed|ing)?\b/i;
+
+  const matchingLine = output
+    .split(/\r?\n/)
+    .reverse()
+    .find((line) => {
+      const lower = line.toLowerCase();
+      return (
+        associationPattern.test(line) &&
+        !lower.includes("disassociated") &&
+        identifiers.some((identifier) => lower.includes(identifier))
+      );
+    });
+
+  if (!matchingLine) return undefined;
+  const digest = createHash("sha256")
+    .update(matchingLine.trim())
+    .digest("hex")
+    .slice(0, 24);
+  return `mac-association:${digest}`;
+}
+
+async function getMacWifiConnectionKey(
+  ssid: string,
+  bssid: string | undefined,
+  device: string,
+): Promise<string> {
+  const signature = [ssid, bssid || "", device]
+    .map((value) => value.toLowerCase())
+    .join("|");
+  const now = Date.now();
+
+  if (
+    macConnectionIdentityCache?.signature === signature &&
+    now - macConnectionIdentityCache.lastCheckedAt < 8000
+  ) {
+    return macConnectionIdentityCache.key;
+  }
+
+  if (pendingMacConnectionIdentity?.signature === signature) {
+    return pendingMacConnectionIdentity.promise;
+  }
+
+  const isInitialLookup = macConnectionIdentityCache?.signature !== signature;
+  const lookupPromise = (async () => {
+    try {
+      const output = await runExecFile("log", [
+        "show",
+        "--style",
+        "compact",
+        "--last",
+        isInitialLookup ? "30d" : "30s",
+        "--predicate",
+        'process == "airportd" AND (eventMessage CONTAINS[c] "assoc" OR eventMessage CONTAINS[c] "join")',
+      ]);
+      const eventKey = parseMacWifiAssociationKey(output, ssid, bssid, device);
+      if (eventKey) {
+        macConnectionIdentityCache = {
+          signature,
+          key: eventKey,
+          lastCheckedAt: now,
+        };
+        return eventKey;
+      }
+    } catch {
+      // Unified logs may be unavailable or redact network details.
+    }
+
+    const fallbackKey =
+      macConnectionIdentityCache?.signature === signature
+        ? macConnectionIdentityCache.key
+        : `mac-signature:${signature}`;
+    macConnectionIdentityCache = {
+      signature,
+      key: fallbackKey,
+      lastCheckedAt: now,
+    };
+    return fallbackKey;
+  })();
+
+  pendingMacConnectionIdentity = {
+    signature,
+    promise: lookupPromise,
+  };
+  try {
+    return await lookupPromise;
+  } finally {
+    if (pendingMacConnectionIdentity?.promise === lookupPromise) {
+      pendingMacConnectionIdentity = undefined;
+    }
+  }
+}
 
 /**
  * Gets the primary Wi-Fi hardware port name (e.g. en0).
@@ -168,19 +288,29 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
     let sessionData: SessionDataUsage | undefined;
     if (isConnected && ssid) {
       try {
-        const netstatOutput = await runExecFile("netstat", ["-ibn"]);
+        const [netstatOutput, connectionKey] = await Promise.all([
+          runExecFile("netstat", ["-ibn"]),
+          getMacWifiConnectionKey(
+            ssid,
+            bssidMatch ? bssidMatch[1].trim() : undefined,
+            device,
+          ),
+        ]);
         const counters = parseNetstatBytes(netstatOutput, device);
         if (counters) {
           sessionData = calculateSessionUsage(
             ssid,
             counters.bytesIn,
             counters.bytesOut,
+            connectionKey,
           );
         }
       } catch {
         // Fallback if netstat fails
       }
     } else {
+      macConnectionIdentityCache = undefined;
+      pendingMacConnectionIdentity = undefined;
       clearSessionBaseline();
     }
 
@@ -193,11 +323,11 @@ export async function getMacWifiStatus(): Promise<WifiStatus> {
       signalPercent,
       ipAddress,
       sessionData,
-      internetSpeed: isConnected ? getCachedInternetSpeed() : undefined,
+      internetSpeed:
+        isConnected && ssid ? getCachedInternetSpeed(ssid) : undefined,
     };
-  } catch {
-    clearSessionBaseline();
-    return { isOn: false, isConnected: false };
+  } catch (error) {
+    throw new Error("Failed to query macOS Wi-Fi status", { cause: error });
   }
 }
 
@@ -491,8 +621,8 @@ export async function getMacWifiNetworks(): Promise<WifiNetwork[]> {
 
       return b.signalPercent - a.signalPercent || a.ssid.localeCompare(b.ssid);
     });
-  } catch {
-    return [];
+  } catch (error) {
+    throw new Error("Failed to query macOS Wi-Fi networks", { cause: error });
   }
 }
 
@@ -632,9 +762,14 @@ export async function getMacBluetoothStatus(): Promise<BluetoothStatus> {
       btData?.controller_properties?.controller_state ||
       btData?.controller_state ||
       "";
+    if (!stateStr) {
+      throw new Error("Unable to parse Bluetooth controller state");
+    }
     return { isOn: /attrib_on|on/i.test(stateStr) };
-  } catch {
-    return { isOn: false };
+  } catch (error) {
+    throw new Error("Failed to query macOS Bluetooth status", {
+      cause: error,
+    });
   }
 }
 
@@ -851,8 +986,10 @@ return output`;
     }
 
     return devices;
-  } catch {
-    return [];
+  } catch (error) {
+    throw new Error("Failed to query macOS Bluetooth devices", {
+      cause: error,
+    });
   }
 }
 

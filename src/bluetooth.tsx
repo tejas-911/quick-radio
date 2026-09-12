@@ -17,6 +17,7 @@ import {
   toggleBluetoothDeviceConnection,
 } from "./services/bluetoothService";
 import { BluetoothDevice, BluetoothStatus } from "./services/types";
+import { SHORTCUTS } from "./utils/shortcuts";
 
 function areBluetoothDevicesEqual(
   a: BluetoothDevice[],
@@ -361,7 +362,7 @@ export default function BluetoothCommand() {
                   title="Copy Mac Address"
                   content={device.address}
                   icon={Icon.Clipboard}
-                  shortcut={{ modifiers: ["cmd"], key: "c" }}
+                  shortcut={SHORTCUTS.copyDetails}
                 />
               </ActionPanel.Section>
             )}
@@ -370,19 +371,19 @@ export default function BluetoothCommand() {
                 title={status.isOn ? "Turn Bluetooth Off" : "Turn Bluetooth On"}
                 icon={Icon.Power}
                 onAction={handleToggleBluetooth}
-                shortcut={{ modifiers: ["cmd"], key: "t" }}
+                shortcut={SHORTCUTS.toggleRadio}
               />
               <Action
                 title="Pair New Device in Settings"
                 icon={Icon.Gear}
                 onAction={openBluetoothSettings}
-                shortcut={{ modifiers: ["cmd"], key: "o" }}
+                shortcut={SHORTCUTS.openSettings}
               />
               <Action
                 title="Refresh List"
                 icon={Icon.ArrowClockwise}
                 onAction={() => refresh(true)}
-                shortcut={{ modifiers: ["cmd"], key: "r" }}
+                shortcut={SHORTCUTS.refresh}
               />
             </ActionPanel.Section>
           </ActionPanel>
@@ -413,7 +414,7 @@ export default function BluetoothCommand() {
                 title="Open Bluetooth Settings"
                 onAction={openBluetoothSettings}
                 icon={Icon.Gear}
-                shortcut={{ modifiers: ["cmd"], key: "o" }}
+                shortcut={SHORTCUTS.openSettings}
               />
             </ActionPanel>
           }
@@ -434,13 +435,13 @@ export default function BluetoothCommand() {
                 title="Turn Bluetooth Off"
                 onAction={handleToggleBluetooth}
                 icon={Icon.Power}
-                shortcut={{ modifiers: ["cmd"], key: "t" }}
+                shortcut={SHORTCUTS.toggleRadio}
               />
               <Action
                 title="Refresh List"
                 onAction={() => refresh(true)}
                 icon={Icon.ArrowClockwise}
-                shortcut={{ modifiers: ["cmd"], key: "r" }}
+                shortcut={SHORTCUTS.refresh}
               />
             </ActionPanel>
           }
