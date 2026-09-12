@@ -17,6 +17,7 @@ import {
   toggleBluetoothDeviceConnection,
 } from "./services/bluetoothService";
 import { BluetoothDevice, BluetoothStatus } from "./services/types";
+import { formatBluetoothBattery } from "./utils/bluetoothBattery";
 import { SHORTCUTS } from "./utils/shortcuts";
 
 function areBluetoothDevicesEqual(
@@ -271,6 +272,9 @@ export default function BluetoothCommand() {
 
   function renderDeviceItem(device: BluetoothDevice) {
     const isPending = pendingDeviceId === device.id;
+    const batteryText = device.isConnected
+      ? formatBluetoothBattery(device.battery)
+      : "";
     let iconSource: Icon = Icon.Bluetooth;
     let iconColor: Color = Color.SecondaryText;
 
@@ -310,6 +314,15 @@ export default function BluetoothCommand() {
               ]
             : device.isConnected
               ? [
+                  ...(batteryText
+                    ? [
+                        {
+                          icon: Icon.Battery,
+                          text: batteryText,
+                          tooltip: `Battery: ${batteryText}`,
+                        },
+                      ]
+                    : []),
                   {
                     icon: { source: Icon.CheckCircle, tintColor: Color.Green },
                     text: { value: "Connected", color: Color.Green },

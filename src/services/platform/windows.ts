@@ -16,6 +16,7 @@ import {
   getCachedInternetSpeed,
   type SessionDataUsage,
 } from "../speedService";
+import { compactBluetoothBattery } from "../../utils/bluetoothBattery";
 
 let environmentAssetsPath: string | undefined;
 try {
@@ -1088,20 +1089,7 @@ export async function getWindowsBluetoothDevices(): Promise<BluetoothDevice[]> {
       if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
         const list = JSON.parse(trimmed);
         if (Array.isArray(list)) {
-          return list.map(
-            (item: {
-              Id: string;
-              Name: string;
-              Address: string;
-              IsConnected: boolean;
-            }) => ({
-              id: item.Id,
-              name: item.Name,
-              address: item.Address,
-              category: categorizeBluetoothDevice(item.Name),
-              isConnected: Boolean(item.IsConnected),
-            }),
-          );
+          return parseWindowsBluetoothDevices(list);
         }
       }
     } catch {
@@ -1113,11 +1101,42 @@ export async function getWindowsBluetoothDevices(): Promise<BluetoothDevice[]> {
 ${WINRT_ASYNC_PREAMBLE}
 [Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Bluetooth.BluetoothLEDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
+[Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
 
 $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
 $bt = $radios | Where-Object { $_.Kind -eq 3 }
 $isBtOn = if ($bt) { $bt.State.ToString() -eq '1' -or $bt.State.ToString() -eq 'On' } else { $true }
+
+$batteryByMac = @{}
+if ($isBtOn) {
+    $requestedProperties = [System.Collections.Generic.List[string]]::new()
+    $requestedProperties.Add('System.Devices.Aep.DeviceAddress')
+    $requestedProperties.Add('System.Devices.Aep.BatteryLevel')
+    $selectors = @(
+        [Windows.Devices.Bluetooth.BluetoothDevice]::GetDeviceSelectorFromPairingState($true),
+        [Windows.Devices.Bluetooth.BluetoothLEDevice]::GetDeviceSelectorFromPairingState($true)
+    )
+    foreach ($selector in $selectors) {
+        try {
+            $infos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($selector, $requestedProperties)) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Enumeration.DeviceInformation]])
+            foreach ($info in $infos) {
+                $addressValue = [string]$info.Properties['System.Devices.Aep.DeviceAddress']
+                $cleanAddress = $addressValue -replace '[^0-9A-Fa-f]', ''
+                if ($cleanAddress -notmatch '^[0-9A-Fa-f]{12}$' -and $info.Id -match '(?i)(?:DEV_|#)([0-9a-f]{12})(?:[^0-9a-f]|$)') {
+                    $cleanAddress = $Matches[1]
+                }
+                $batteryValue = $info.Properties['System.Devices.Aep.BatteryLevel']
+                if ($cleanAddress -match '^[0-9A-Fa-f]{12}$' -and $null -ne $batteryValue) {
+                    $batteryNumber = [int]$batteryValue
+                    if ($batteryNumber -ge 0 -and $batteryNumber -le 100) {
+                        $batteryByMac[$cleanAddress.ToUpper()] = $batteryNumber
+                    }
+                }
+            }
+        } catch {}
+    }
+}
 
 $pnpDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'BTHENUM\\DEV_*' }
 $results = @()
@@ -1153,6 +1172,7 @@ foreach ($dev in $pnpDevices) {
         Name = $dev.FriendlyName
         Address = $formattedMac
         IsConnected = $isConnected
+        BatteryLevel = $batteryByMac[$macRaw.ToUpper()]
     }
 }
 $results | ConvertTo-Json -Depth 2
@@ -1164,25 +1184,41 @@ $results | ConvertTo-Json -Depth 2
     const parsed = JSON.parse(jsonOutput);
     const list = Array.isArray(parsed) ? parsed : [parsed];
 
-    return list.map(
-      (item: {
-        Id: string;
-        Name: string;
-        Address: string;
-        IsConnected: boolean;
-      }) => ({
-        id: item.Id,
-        name: item.Name,
-        address: item.Address,
-        category: categorizeBluetoothDevice(item.Name),
-        isConnected: Boolean(item.IsConnected),
-      }),
-    );
+    return parseWindowsBluetoothDevices(list);
   } catch (error) {
     throw new Error("Failed to query Windows Bluetooth devices", {
       cause: error,
     });
   }
+}
+
+interface WindowsBluetoothDevicePayload {
+  Id: string;
+  Name: string;
+  Address: string;
+  IsConnected: boolean;
+  BatteryLevel?: unknown;
+}
+
+export function parseWindowsBluetoothDevices(
+  payload: unknown,
+): BluetoothDevice[] {
+  if (!Array.isArray(payload)) return [];
+
+  return payload.map((raw) => {
+    const item = raw as WindowsBluetoothDevicePayload;
+    const isConnected = Boolean(item.IsConnected);
+    return {
+      id: item.Id,
+      name: item.Name,
+      address: item.Address,
+      category: categorizeBluetoothDevice(item.Name),
+      isConnected,
+      battery: isConnected
+        ? compactBluetoothBattery({ level: item.BatteryLevel })
+        : undefined,
+    };
+  });
 }
 
 function categorizeBluetoothDevice(name: string): BluetoothDeviceCategory {

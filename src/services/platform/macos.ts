@@ -7,6 +7,7 @@ import type {
   BluetoothStatus,
   BluetoothDevice,
   BluetoothDeviceCategory,
+  BluetoothBattery,
 } from "../types";
 import {
   calculateSessionUsage,
@@ -14,6 +15,7 @@ import {
   getCachedInternetSpeed,
   type SessionDataUsage,
 } from "../speedService";
+import { compactBluetoothBattery } from "../../utils/bluetoothBattery";
 
 const execFileAsync = promisify(execFile);
 
@@ -868,6 +870,131 @@ export async function toggleMacBluetooth(
   );
 }
 
+const MAC_BLUETOOTH_BATTERY_CACHE_MS = 30_000;
+let macBluetoothBatteryCache:
+  { levels: Record<string, BluetoothBattery>; timestamp: number } | undefined;
+let pendingMacBluetoothBatteryLookup:
+  Promise<Record<string, BluetoothBattery>> | undefined;
+
+export function normalizeBluetoothAddress(address: string): string {
+  return address.replace(/[^0-9a-f]/gi, "").toLowerCase();
+}
+
+function findProfilerValue(
+  raw: Record<string, unknown>,
+  aliases: string[],
+): unknown {
+  const normalizedAliases = new Set(
+    aliases.map((key) => key.replace(/_/g, "").toLowerCase()),
+  );
+  const entry = Object.entries(raw).find(([key]) =>
+    normalizedAliases.has(key.replace(/_/g, "").toLowerCase()),
+  );
+  return entry?.[1];
+}
+
+export function parseMacBluetoothBatteryLevels(
+  payload: unknown,
+): Record<string, BluetoothBattery> {
+  const levels: Record<string, BluetoothBattery> = {};
+
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+
+    const raw = value as Record<string, unknown>;
+    const addressValue = findProfilerValue(raw, [
+      "device_address",
+      "device_addr",
+      "address",
+    ]);
+    if (typeof addressValue === "string") {
+      const address = normalizeBluetoothAddress(addressValue);
+      if (address.length === 12) {
+        const battery = compactBluetoothBattery({
+          level: findProfilerValue(raw, [
+            "device_batteryLevelMain",
+            "device_batteryLevel",
+            "batteryLevelMain",
+            "batteryLevel",
+          ]),
+          left: findProfilerValue(raw, [
+            "device_batteryLevelLeft",
+            "batteryLevelLeft",
+          ]),
+          right: findProfilerValue(raw, [
+            "device_batteryLevelRight",
+            "batteryLevelRight",
+          ]),
+          case: findProfilerValue(raw, [
+            "device_batteryLevelCase",
+            "batteryLevelCase",
+          ]),
+        });
+        if (battery) levels[address] = battery;
+      }
+    }
+
+    Object.values(raw).forEach(visit);
+  };
+
+  visit(payload);
+  return levels;
+}
+
+export function attachMacBluetoothBatteryLevels(
+  devices: BluetoothDevice[],
+  levels: Record<string, BluetoothBattery>,
+): BluetoothDevice[] {
+  return devices.map((device) => {
+    if (!device.isConnected || !device.address) {
+      return { ...device, battery: undefined };
+    }
+    const battery = levels[normalizeBluetoothAddress(device.address)];
+    return battery ? { ...device, battery } : { ...device, battery: undefined };
+  });
+}
+
+function cacheMacBluetoothBatteryLevels(
+  payload: unknown,
+): Record<string, BluetoothBattery> {
+  const levels = parseMacBluetoothBatteryLevels(payload);
+  macBluetoothBatteryCache = { levels, timestamp: Date.now() };
+  return levels;
+}
+
+async function getMacBluetoothBatteryLevels(): Promise<
+  Record<string, BluetoothBattery>
+> {
+  const now = Date.now();
+  if (
+    macBluetoothBatteryCache &&
+    now - macBluetoothBatteryCache.timestamp < MAC_BLUETOOTH_BATTERY_CACHE_MS
+  ) {
+    return macBluetoothBatteryCache.levels;
+  }
+  if (pendingMacBluetoothBatteryLookup) {
+    return pendingMacBluetoothBatteryLookup;
+  }
+
+  pendingMacBluetoothBatteryLookup = runExecFile("system_profiler", [
+    "SPBluetoothDataType",
+    "-json",
+  ])
+    .then((output) => cacheMacBluetoothBatteryLevels(JSON.parse(output)))
+    .catch(() => {
+      macBluetoothBatteryCache = { levels: {}, timestamp: Date.now() };
+      return {};
+    })
+    .finally(() => {
+      pendingMacBluetoothBatteryLookup = undefined;
+    });
+  return pendingMacBluetoothBatteryLookup;
+}
+
 export async function getMacBluetoothDevices(): Promise<BluetoothDevice[]> {
   const blueutil = await getBlueutilPath();
   if (blueutil) {
@@ -878,7 +1005,7 @@ export async function getMacBluetoothDevices(): Promise<BluetoothDevice[]> {
         "json",
       ]);
       const parsed = JSON.parse(output);
-      return parsed.map(
+      const devices = parsed.map(
         (item: { address: string; name: string; connected: boolean }) => ({
           id: item.address,
           name: item.name,
@@ -887,6 +1014,10 @@ export async function getMacBluetoothDevices(): Promise<BluetoothDevice[]> {
           isConnected: item.connected,
           isPaired: true,
         }),
+      );
+      return attachMacBluetoothBatteryLevels(
+        devices,
+        await getMacBluetoothBatteryLevels(),
       );
     } catch {
       // Fallback to native
@@ -931,7 +1062,10 @@ return output`;
           isPaired: true,
         });
       }
-      return devices;
+      return attachMacBluetoothBatteryLevels(
+        devices,
+        await getMacBluetoothBatteryLevels(),
+      );
     }
   } catch {
     // Fallback to system_profiler
@@ -944,6 +1078,7 @@ return output`;
       "-json",
     ]);
     const parsed = JSON.parse(output);
+    const batteryLevels = cacheMacBluetoothBatteryLevels(parsed);
     const btData = parsed?.SPBluetoothDataType?.[0];
     const devices: BluetoothDevice[] = [];
 
@@ -985,7 +1120,7 @@ return output`;
       for (const d of btData.devices_list) processDevice(d);
     }
 
-    return devices;
+    return attachMacBluetoothBatteryLevels(devices, batteryLevels);
   } catch (error) {
     throw new Error("Failed to query macOS Bluetooth devices", {
       cause: error,

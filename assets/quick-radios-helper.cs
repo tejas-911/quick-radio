@@ -736,6 +736,74 @@ class QuickRadiosHelper {
         public string Name;
         public string FormattedMac;
         public bool IsConnected;
+        public int BatteryLevel = -1;
+    }
+
+    private static void MergePairedDeviceInformation(string selector, Dictionary<string, DeviceEntry> devices) {
+        try {
+            string[] properties = new string[] {
+                "System.Devices.Aep.IsConnected",
+                "System.Devices.Aep.DeviceAddress",
+                "System.Devices.Aep.BatteryLevel"
+            };
+            var op = DeviceInformation.FindAllAsync(selector, properties);
+            var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
+            if (!task.Wait(700) || task.Result == null) return;
+
+            foreach (var d in task.Result) {
+                ulong addr;
+                string cleanHex;
+                object addressValue;
+                bool parsedAddress = false;
+                if (d.Properties.TryGetValue("System.Devices.Aep.DeviceAddress", out addressValue) && addressValue != null) {
+                    parsedAddress = TryParseMac(addressValue.ToString(), out addr, out cleanHex);
+                } else {
+                    addr = 0;
+                    cleanHex = null;
+                }
+                if (!parsedAddress) {
+                    parsedAddress = TryParseMac(d.Id, out addr, out cleanHex);
+                }
+                if (!parsedAddress) continue;
+
+                bool isConn = false;
+                object connVal;
+                if (d.Properties.TryGetValue("System.Devices.Aep.IsConnected", out connVal) && connVal is bool) {
+                    isConn = (bool)connVal;
+                }
+
+                int batteryLevel = -1;
+                object batteryValue;
+                if (d.Properties.TryGetValue("System.Devices.Aep.BatteryLevel", out batteryValue) && batteryValue != null) {
+                    try {
+                        int parsedLevel = Convert.ToInt32(batteryValue);
+                        if (parsedLevel >= 0 && parsedLevel <= 100) batteryLevel = parsedLevel;
+                    } catch {}
+                }
+
+                DeviceEntry existing;
+                if (devices.TryGetValue(cleanHex, out existing)) {
+                    if (isConn) existing.IsConnected = true;
+                    if (batteryLevel >= 0) existing.BatteryLevel = batteryLevel;
+                    continue;
+                }
+
+                string formattedMac = string.Format("{0}:{1}:{2}:{3}:{4}:{5}",
+                    cleanHex.Substring(0, 2),
+                    cleanHex.Substring(2, 2),
+                    cleanHex.Substring(4, 2),
+                    cleanHex.Substring(6, 2),
+                    cleanHex.Substring(8, 2),
+                    cleanHex.Substring(10, 2));
+                devices[cleanHex] = new DeviceEntry {
+                    CleanHex = cleanHex,
+                    Name = string.IsNullOrEmpty(d.Name) ? ("Bluetooth Device (" + cleanHex + ")") : d.Name,
+                    FormattedMac = formattedMac,
+                    IsConnected = isConn,
+                    BatteryLevel = batteryLevel
+                };
+            }
+        } catch {}
     }
 
     private static int ListDevices() {
@@ -794,53 +862,18 @@ class QuickRadiosHelper {
                 }
             }
 
-            try {
-                string leSelector = BluetoothLEDevice.GetDeviceSelectorFromPairingState(true);
-                var op = DeviceInformation.FindAllAsync(leSelector, new string[] { "System.Devices.Aep.IsConnected" });
-                var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
-                if (task.Wait(400) && task.Result != null) {
-                    foreach (var d in task.Result) {
-                        ulong addr;
-                        string cleanHex;
-                        if (TryParseMac(d.Id, out addr, out cleanHex)) {
-                            bool isConn = false;
-                            object connVal;
-                            if (d.Properties.TryGetValue("System.Devices.Aep.IsConnected", out connVal) && connVal is bool) {
-                                isConn = (bool)connVal;
-                            }
-                            DeviceEntry existing;
-                            if (devices.TryGetValue(cleanHex, out existing)) {
-                                if (isConn) {
-                                    existing.IsConnected = true;
-                                }
-                            } else {
-                                string formattedMac = string.Format("{0}:{1}:{2}:{3}:{4}:{5}",
-                                    cleanHex.Substring(0, 2),
-                                    cleanHex.Substring(2, 2),
-                                    cleanHex.Substring(4, 2),
-                                    cleanHex.Substring(6, 2),
-                                    cleanHex.Substring(8, 2),
-                                    cleanHex.Substring(10, 2));
-                                devices[cleanHex] = new DeviceEntry {
-                                    CleanHex = cleanHex,
-                                    Name = string.IsNullOrEmpty(d.Name) ? ("Bluetooth Device (" + cleanHex + ")") : d.Name,
-                                    FormattedMac = formattedMac,
-                                    IsConnected = isConn
-                                };
-                            }
-                        }
-                    }
-                }
-            } catch {}
+            MergePairedDeviceInformation(BluetoothDevice.GetDeviceSelectorFromPairingState(true), devices);
+            MergePairedDeviceInformation(BluetoothLEDevice.GetDeviceSelectorFromPairingState(true), devices);
 
             var results = new List<string>();
             foreach (var dev in devices.Values) {
                 results.Add(string.Format(
-                    "{{\"Id\":\"BTHENUM\\\\DEV_{0}\",\"Name\":\"{1}\",\"Address\":\"{2}\",\"IsConnected\":{3}}}",
+                    "{{\"Id\":\"BTHENUM\\\\DEV_{0}\",\"Name\":\"{1}\",\"Address\":\"{2}\",\"IsConnected\":{3},\"BatteryLevel\":{4}}}",
                     dev.CleanHex,
                     EscapeJson(dev.Name),
                     dev.FormattedMac,
-                    dev.IsConnected ? "true" : "false"
+                    dev.IsConnected ? "true" : "false",
+                    dev.BatteryLevel >= 0 ? dev.BatteryLevel.ToString() : "null"
                 ));
             }
 
