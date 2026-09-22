@@ -628,7 +628,7 @@ export async function getWindowsWifiNetworks(
     ]);
 
     const savedProfiles = new Set<string>();
-    const profileRegex = /All User Profile\s*:\s*(.+)/gi;
+    const profileRegex = /(?:All|Current) User Profile\s*:\s*(.+)/gi;
     let match: RegExpExecArray | null;
     while ((match = profileRegex.exec(profilesOutput)) !== null) {
       savedProfiles.add(match[1].trim());
@@ -1102,6 +1102,8 @@ ${WINRT_ASYNC_PREAMBLE}
 [Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Bluetooth.BluetoothLEDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+[Windows.Devices.Enumeration.DeviceInformationCollection,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+[Windows.Devices.Enumeration.DeviceInformationKind,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
 
 $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
@@ -1112,21 +1114,31 @@ $batteryByMac = @{}
 if ($isBtOn) {
     $requestedProperties = [System.Collections.Generic.List[string]]::new()
     $requestedProperties.Add('System.Devices.Aep.DeviceAddress')
-    $requestedProperties.Add('System.Devices.Aep.BatteryLevel')
-    $selectors = @(
-        [Windows.Devices.Bluetooth.BluetoothDevice]::GetDeviceSelectorFromPairingState($true),
-        [Windows.Devices.Bluetooth.BluetoothLEDevice]::GetDeviceSelectorFromPairingState($true)
+    $requestedProperties.Add('{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2')
+    $requestedProperties.Add('System.Devices.BatteryLife')
+    $queries = @(
+        @{ Selector = [Windows.Devices.Bluetooth.BluetoothDevice]::GetDeviceSelectorFromPairingState($true); AssociationEndpoint = $false },
+        @{ Selector = [Windows.Devices.Bluetooth.BluetoothLEDevice]::GetDeviceSelectorFromPairingState($true); AssociationEndpoint = $false },
+        @{ Selector = 'System.Devices.Aep.ProtocolId:="{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}"'; AssociationEndpoint = $true }
     )
-    foreach ($selector in $selectors) {
+    foreach ($query in $queries) {
         try {
-            $infos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($selector, $requestedProperties)) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Enumeration.DeviceInformation]])
+            if ($query.AssociationEndpoint) {
+                $operation = [Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($query.Selector, $requestedProperties, [Windows.Devices.Enumeration.DeviceInformationKind]::AssociationEndpoint)
+            } else {
+                $operation = [Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($query.Selector, $requestedProperties)
+            }
+            $infos = Await $operation ([Windows.Devices.Enumeration.DeviceInformationCollection])
             foreach ($info in $infos) {
                 $addressValue = [string]$info.Properties['System.Devices.Aep.DeviceAddress']
                 $cleanAddress = $addressValue -replace '[^0-9A-Fa-f]', ''
                 if ($cleanAddress -notmatch '^[0-9A-Fa-f]{12}$' -and $info.Id -match '(?i)(?:DEV_|#)([0-9a-f]{12})(?:[^0-9a-f]|$)') {
                     $cleanAddress = $Matches[1]
                 }
-                $batteryValue = $info.Properties['System.Devices.Aep.BatteryLevel']
+                $batteryValue = $info.Properties['{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2']
+                if ($null -eq $batteryValue) {
+                    $batteryValue = $info.Properties['System.Devices.BatteryLife']
+                }
                 if ($cleanAddress -match '^[0-9A-Fa-f]{12}$' -and $null -ne $batteryValue) {
                     $batteryNumber = [int]$batteryValue
                     if ($batteryNumber -ge 0 -and $batteryNumber -le 100) {
@@ -1137,6 +1149,21 @@ if ($isBtOn) {
         } catch {}
     }
 }
+
+try {
+    Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'BTHENUM\\*' } | ForEach-Object {
+        if ($_.InstanceId -match '(?:^|[\\\\&_])([0-9A-Fa-f]{12})(?=[\\\\&_]|$)') {
+            $mac = $Matches[1].ToUpper()
+            if (-not $batteryByMac.ContainsKey($mac)) {
+                $prop = Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName '{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2' -ErrorAction SilentlyContinue
+                if ($prop -and $null -ne $prop.Data) {
+                    $level = [int]$prop.Data
+                    if ($level -ge 0 -and $level -le 100) { $batteryByMac[$mac] = $level }
+                }
+            }
+        }
+    }
+} catch {}
 
 $pnpDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'BTHENUM\\DEV_*' }
 $results = @()

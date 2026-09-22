@@ -33,7 +33,7 @@ async function measureDownloadSpeed(
     const t0 = Date.now();
     const res = await fetch(
       `https://speed.cloudflare.com/__down?bytes=${bytes}`,
-      { signal: AbortSignal.any([signal, AbortSignal.timeout(3500)]) },
+      { signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]) },
     );
     if (!res.ok) return undefined;
     const buffer = await res.arrayBuffer();
@@ -60,7 +60,7 @@ async function measureUploadSpeed(
     const res = await fetch("https://speed.cloudflare.com/__up", {
       method: "POST",
       body: new Uint8Array(bytes),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(3500)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
     });
     if (!res.ok) return undefined;
     const durationSec = (Date.now() - t0) / 1000;
