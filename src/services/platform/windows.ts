@@ -828,7 +828,7 @@ async function addWindowsWifiProfileXml(profileXml: string): Promise<void> {
       "add",
       "profile",
       `filename=${tempPath}`,
-      "user=current",
+      "user=all",
     ]);
   } finally {
     if (fs.existsSync(tempPath)) {
@@ -997,6 +997,14 @@ export async function connectWindowsWifi(
 export async function disconnectWindowsWifi(): Promise<void> {
   await runNetsh(["wlan", "disconnect"]);
   clearSessionBaseline();
+  invalidateWindowsWifiCache();
+}
+
+/**
+ * Forgets (deletes) a saved Wi-Fi network profile.
+ */
+export async function forgetWindowsWifiNetwork(ssid: string): Promise<void> {
+  await runNetsh(["wlan", "delete", "profile", `name=${ssid}`]);
   invalidateWindowsWifiCache();
 }
 
@@ -1337,6 +1345,55 @@ export async function toggleWindowsBluetoothDeviceConnection(
     }
     throw new Error(trimmed || "Failed to disconnect device");
   }
+}
+
+/**
+ * Unpairs (forgets) a Bluetooth device.
+ */
+export async function unpairWindowsBluetoothDevice(
+  deviceId: string,
+): Promise<void> {
+  const macMatch = deviceId.match(/DEV_([0-9A-Fa-f]{12})/i);
+  const cleanMac = deviceId.replace(/[^0-9A-Fa-f]/g, "");
+  const macHex = macMatch
+    ? macMatch[1]
+    : cleanMac.length === 12
+      ? cleanMac
+      : undefined;
+
+  if (!macHex) {
+    throw new Error(
+      `Unable to identify Bluetooth device hardware MAC address for: ${deviceId}`,
+    );
+  }
+
+  const helperExe = getHelperExePath();
+  if (!helperExe) {
+    throw new Error("Quick Radios helper executable not found");
+  }
+
+  let stdout = "";
+  try {
+    const res = await execFileAsync(helperExe, ["unpair", macHex], {
+      windowsHide: true,
+    });
+    stdout = res.stdout;
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string | Buffer; message?: string };
+    stdout = (execErr?.stdout ?? "").toString();
+    if (!stdout && err instanceof Error) {
+      throw err;
+    }
+  }
+
+  const trimmed = stdout.trim();
+  if (trimmed.includes("Unpaired")) {
+    return;
+  }
+  if (trimmed.startsWith("Error:")) {
+    throw new Error(trimmed);
+  }
+  throw new Error(trimmed || "Failed to unpair device");
 }
 
 /**

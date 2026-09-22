@@ -805,6 +805,47 @@ class QuickRadiosHelper {
         }
     }
 
+    private static int UnpairDevice(ulong address) {
+        BluetoothDevice device = null;
+        try {
+            var op = BluetoothDevice.FromBluetoothAddressAsync(address);
+            var task = System.WindowsRuntimeSystemExtensions.AsTask(op);
+            if (!task.Wait(4000) || task.Result == null) {
+                Console.WriteLine("Error: Device not found");
+                return 2;
+            }
+            device = task.Result;
+
+            var pairing = device.DeviceInformation.Pairing;
+            if (!pairing.IsPaired) {
+                CompleteSuccess("Unpaired");
+                return 0;
+            }
+
+            var unpairOp = pairing.UnpairAsync();
+            var unpairTask = System.WindowsRuntimeSystemExtensions.AsTask(unpairOp);
+            if (!unpairTask.Wait(8000)) {
+                Console.WriteLine("Error: Unpair timed out");
+                return 1;
+            }
+
+            var result = unpairTask.Result;
+            if (result.Status == DeviceUnpairingResultStatus.Unpaired ||
+                result.Status == DeviceUnpairingResultStatus.AlreadyUnpaired) {
+                CompleteSuccess("Unpaired");
+                return 0;
+            }
+
+            Console.WriteLine("Error: " + result.Status);
+            return 1;
+        } catch (Exception ex) {
+            Console.WriteLine("Error: " + ex.Message);
+            return 2;
+        } finally {
+            if (device != null) device.Dispose();
+        }
+    }
+
     private static int GetDeviceStatus(ulong address) {
         try {
             int state = GetDeviceConnectionState(address, 2500);
@@ -1183,6 +1224,20 @@ class QuickRadiosHelper {
                 return 1;
             }
             return DisconnectDevice(addr, cleanHex);
+        }
+
+        if (cmd == "unpair" || cmd == "bt-unpair" || cmd == "forget-device") {
+            if (args.Length < 2) {
+                Console.WriteLine("MissingMacAddress");
+                return 1;
+            }
+            ulong unpairAddr;
+            string unpairCleanHex;
+            if (!TryParseMac(args[1], out unpairAddr, out unpairCleanHex)) {
+                Console.WriteLine("InvalidMacAddress");
+                return 1;
+            }
+            return UnpairDevice(unpairAddr);
         }
 
         if (cmd == "device-status" || cmd == "bt-device-status") {

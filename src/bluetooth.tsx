@@ -1,9 +1,11 @@
 import {
   Action,
   ActionPanel,
+  Alert,
   Color,
   Icon,
   List,
+  confirmAlert,
   showToast,
   Toast,
 } from "@raycast/api";
@@ -15,6 +17,7 @@ import {
   openBluetoothSettings,
   toggleBluetooth,
   toggleBluetoothDeviceConnection,
+  unpairBluetoothDevice,
 } from "./services/bluetoothService";
 import { BluetoothDevice, BluetoothStatus } from "./services/types";
 import { formatBluetoothBattery } from "./utils/bluetoothBattery";
@@ -253,6 +256,42 @@ export default function BluetoothCommand() {
     }
   }
 
+  async function handleForgetDevice(device: BluetoothDevice) {
+    if (isActionInProgressRef.current) return;
+    const confirmed = await confirmAlert({
+      title: `Forget "${device.name}"?`,
+      message:
+        "This will unpair the device. You'll need to pair it again to reconnect.",
+      primaryAction: {
+        title: "Forget Device",
+        style: Alert.ActionStyle.Destructive,
+      },
+    });
+    if (!confirmed) return;
+
+    actionSeqRef.current++;
+    isActionInProgressRef.current = true;
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: `Forgetting "${device.name}"...`,
+    });
+
+    try {
+      await unpairBluetoothDevice(device.id);
+      if (!isMountedRef.current) return;
+      toast.style = Toast.Style.Success;
+      toast.title = `Forgot "${device.name}"`;
+      refresh({ isBackground: true });
+    } catch (error) {
+      if (!isMountedRef.current) return;
+      toast.style = Toast.Style.Failure;
+      toast.title = `Failed to forget "${device.name}"`;
+      toast.message = error instanceof Error ? error.message : String(error);
+    } finally {
+      isActionInProgressRef.current = false;
+    }
+  }
+
   const connectedDevices = devices.filter((d) => d.isConnected);
   const audioDevices = devices.filter(
     (d) => !d.isConnected && d.category === "audio",
@@ -379,6 +418,14 @@ export default function BluetoothCommand() {
                 />
               </ActionPanel.Section>
             )}
+            <ActionPanel.Section>
+              <Action
+                title="Forget Device"
+                icon={Icon.Trash}
+                style={Action.Style.Destructive}
+                onAction={() => !isPending && handleForgetDevice(device)}
+              />
+            </ActionPanel.Section>
             <ActionPanel.Section title="Controls">
               <Action
                 title={status.isOn ? "Turn Bluetooth Off" : "Turn Bluetooth On"}

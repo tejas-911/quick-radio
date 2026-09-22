@@ -641,6 +641,15 @@ export async function connectMacWifi(
   await runExecFile("networksetup", args);
 }
 
+export async function forgetMacWifiNetwork(ssid: string): Promise<void> {
+  const device = await getMacWifiDevice();
+  await runExecFile("networksetup", [
+    "-removepreferredwirelessnetwork",
+    device,
+    ssid,
+  ]);
+}
+
 export async function disconnectMacWifi(): Promise<void> {
   clearSessionBaseline();
   const device = await getMacWifiDevice();
@@ -1175,6 +1184,44 @@ if devList is not missing value then
       else
         d's closeConnection()
       end if
+      exit repeat
+    end if
+  end repeat
+end if
+if not found then
+  error "Bluetooth device " & normTarget & " not found."
+end if`;
+
+  await runExecFile("osascript", ["-e", script]);
+}
+
+export async function unpairMacBluetoothDevice(address: string): Promise<void> {
+  const blueutil = await getBlueutilPath();
+  if (blueutil) {
+    try {
+      await runExecFile(blueutil, ["--unpair", address]);
+      return;
+    } catch {
+      // Fallback to native
+    }
+  }
+
+  // Stock macOS native unpairing using AppleScript IOBluetooth
+  const normalizedTarget = address.replace(/[:-]/g, "").toLowerCase();
+  const script = `use framework "IOBluetooth"
+use framework "Foundation"
+use scripting additions
+
+set normTarget to "${normalizedTarget}"
+set devList to current application's IOBluetoothDevice's pairedDevices()
+set found to false
+if devList is not missing value then
+  repeat with d in (devList as list)
+    set curAddr to (d's addressString() as string)
+    set cleanAddr to do shell script "echo " & quoted form of curAddr & " | tr -d ':-' | tr '[:upper:]' '[:lower:]'"
+    if cleanAddr is equal to normTarget then
+      set found to true
+      d's removePairing()
       exit repeat
     end if
   end repeat

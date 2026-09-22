@@ -1,9 +1,11 @@
 import {
   Action,
   ActionPanel,
+  Alert,
   Color,
   Icon,
   List,
+  confirmAlert,
   showToast,
   Toast,
 } from "@raycast/api";
@@ -13,6 +15,7 @@ import { ConnectPasswordForm } from "./components/ConnectPasswordForm";
 import {
   connectWifi,
   disconnectWifi,
+  forgetWifiNetwork,
   getInternetSpeed,
   getWifiNetworks,
   getWifiPassword,
@@ -318,6 +321,49 @@ export default function WifiCommand() {
     }
   }
 
+  async function handleForgetNetwork(network: WifiNetwork) {
+    if (isActionInProgressRef.current) return;
+    const confirmed = await confirmAlert({
+      title: `Forget "${network.ssid}"?`,
+      message:
+        "This will remove the saved network. You'll need to enter the password again to reconnect.",
+      primaryAction: {
+        title: "Forget Network",
+        style: Alert.ActionStyle.Destructive,
+      },
+    });
+    if (!confirmed) return;
+
+    actionSeqRef.current++;
+    isActionInProgressRef.current = true;
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: `Forgetting "${network.ssid}"...`,
+    });
+
+    try {
+      await forgetWifiNetwork(network.ssid);
+      if (!isMountedRef.current) return;
+      toast.style = Toast.Style.Success;
+      toast.title = `Forgot "${network.ssid}"`;
+      if (network.isConnected) {
+        setStatus((prev) => ({
+          ...prev,
+          isConnected: false,
+          sessionData: undefined,
+        }));
+      }
+      refresh();
+    } catch (error) {
+      if (!isMountedRef.current) return;
+      toast.style = Toast.Style.Failure;
+      toast.title = `Failed to forget "${network.ssid}"`;
+      toast.message = error instanceof Error ? error.message : String(error);
+    } finally {
+      isActionInProgressRef.current = false;
+    }
+  }
+
   async function handleTestSpeed() {
     const activeSsid = status.ssid;
     if (!status.isConnected || !activeSsid) {
@@ -511,6 +557,16 @@ export default function WifiCommand() {
                         />
                       )}
                     </ActionPanel.Section>
+                    {connectedNetwork.isSaved && (
+                      <ActionPanel.Section>
+                        <Action
+                          title="Forget Network"
+                          icon={Icon.Trash}
+                          style={Action.Style.Destructive}
+                          onAction={() => handleForgetNetwork(connectedNetwork)}
+                        />
+                      </ActionPanel.Section>
+                    )}
                     <ActionPanel.Section title="Controls">
                       <Action
                         title="Turn Wi-fi Off"
@@ -577,6 +633,12 @@ export default function WifiCommand() {
                           onAction={handleTestSpeed}
                         />
                       )}
+                      <Action
+                        title="Forget Network"
+                        icon={Icon.Trash}
+                        style={Action.Style.Destructive}
+                        onAction={() => handleForgetNetwork(net)}
+                      />
                       <Action
                         title="Turn Wi-fi Off"
                         icon={Icon.Power}
@@ -717,6 +779,12 @@ export default function WifiCommand() {
                           onAction={handleTestSpeed}
                         />
                       )}
+                      <Action
+                        title="Forget Network"
+                        icon={Icon.Trash}
+                        style={Action.Style.Destructive}
+                        onAction={() => handleForgetNetwork(net)}
+                      />
                       <Action
                         title="Turn Wi-fi Off"
                         icon={Icon.Power}
