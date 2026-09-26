@@ -1,9 +1,12 @@
 # Quick Radios Changelog
 
-## [Location Access Guidance & Store Discoverability] - {PR_MERGE_DATE}
+## [Location Access Guidance] - {PR_MERGE_DATE}
 
 - Added a *Location Access Required* screen to Manage Wi-Fi when Windows Location access is off, with a shortcut to the Location settings page; the list reloads automatically once access is granted
 - Documented the Windows 11 Location requirement for Wi-Fi scanning in the README
+
+## [Improved Store Discoverability] - 2026-09-23
+
 - Added search keywords (wifi, wlan, wireless, network, hotspot) so the extension appears when searching for Wi-Fi
 
 ## [Initial Version] - 2026-09-23
